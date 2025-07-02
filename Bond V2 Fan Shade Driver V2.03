@@ -1,0 +1,155 @@
+/**
+ *  Bond V2 Shade Driver
+ *
+ *  Copyright 2019-2020 Dominick Meglio
+ *  Copyright 2025 Simon Mason
+ *
+ * Original Revision History (by Dominick Meglio)
+ * - Original shade driver implementation
+ * 
+ * V2 Revision History (by Simon Mason)
+ * 2.00 - 2025.01.01 - Enhanced setPosition with proper Bond API SetPosition support, improved position handling
+ * 2.01 - 2025.01.01 - Added proper state tracking for position changes, improved refresh functionality
+ * 2.02 - 2025.01.01 - Fixed startPositionChange to track movement and auto-update at limits
+ * 2.03 - 2025.01.01 - Implemented unknown state for stopPositionChange, removed redundant movement tracking
+ *
+ */
+metadata {
+    definition (
+		name: "Bond V2 Shade Driver", 
+		namespace: "simonmason", 
+		author: "Simon Mason",
+		importUrl: "https://raw.githubusercontent.com/simonmason/hubitat-bond-v2/master/drivers/Bond_V2_Shade_Driver.groovy"
+	) {
+        capability "WindowShade"
+		capability "Switch"
+		capability "Refresh"
+		
+        command "stop"
+        command "preset"
+        command "startPositionChange", [[name: "direction*", type: "ENUM", description: "Direction", constraints: ["open", "close"]]]
+        command "stopPositionChange"
+        command "fixShade", [[name:"Shade*", type: "ENUM", description: "Shade", constraints: ["open","close"] ] ]
+		command "toggle"
+		
+        attribute "position", "number"
+        attribute "moving", "enum", ["opening", "closing", "stopped"]
+    }
+}
+
+def installed() {
+    log.debug "Bond V2 Shade Driver installed"
+    initialize()
+}
+
+def updated() {
+    log.debug "Bond V2 Shade Driver updated"
+    initialize()
+}
+
+def initialize() {
+    log.debug "Initializing Bond V2 Shade Driver"
+    sendEvent(name: "position", value: 100) // Default position - closed
+    sendEvent(name: "windowShade", value: "closed")
+    sendEvent(name: "switch", value: "off")
+    sendEvent(name: "moving", value: "stopped")
+    unschedule()
+}
+
+def open() {
+	parent.handleOpen(device)
+}
+
+def close() {
+	parent.handleClose(device)
+}
+
+def on() {
+	open()
+}
+
+def off() {
+	close()
+}
+
+def toggle() {
+	def currentState = device.currentValue("windowShade")
+	if (currentState == "open") {
+		close()
+	} else {
+		open()
+	}
+}
+
+def stop() {
+	parent.handleStop(device)
+}
+
+def preset() {
+	parent.handlePreset(device)
+}
+
+def fixShade(shade) {
+	parent.fixShadeState(device, shade)
+}
+
+def setPosition(Number position) {
+    log.info "Setting shade position to ${position}%"
+    
+    // Validate position range
+    if (position < 0) position = 0
+    if (position > 100) position = 100
+    
+    // Handle special cases first for backward compatibility
+    if (position == 0) {
+        log.info "Position 0: Opening shade"
+        open()
+        return
+    } else if (position == 100) {
+        log.info "Position 100: Closing shade"
+        close()
+        return
+    } else if (position == 50) {
+        log.info "Position 50: Triggering preset"
+        preset()
+        return
+    }
+    
+    // Try to use proper SetPosition API call
+    parent.handleSetPosition(device, position)
+}
+
+def setLevel(Number level) {
+    // Support for apps that use setLevel instead of setPosition
+    setPosition(level)
+}
+
+def startPositionChange(direction) {
+    log.debug "Starting position change: ${direction}"
+    
+    sendEvent(name: "moving", value: direction == "open" ? "opening" : "closing")
+    
+    if (direction == "open") {
+        parent.handleStartPositionChange(device, "open")
+    } else if (direction == "close") {
+        parent.handleStartPositionChange(device, "close")
+    } else {
+        log.warn "Invalid direction for startPositionChange: ${direction}"
+    }
+    
+    // Don't schedule complex tracking - let stopPositionChange or manual refresh handle final state
+}
+
+def stopPositionChange() {
+    log.debug "Stopping position change"
+    unschedule(checkMovementProgress)
+    sendEvent(name: "moving", value: "stopped")
+    parent.handleStopPositionChange(device)
+    // Refresh position after a brief delay
+    runIn(2, refresh)
+}
+
+def refresh() {
+    log.debug "Refreshing shade status" 
+    parent.handleShadeRefresh(device)
+}

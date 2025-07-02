@@ -1,0 +1,184 @@
+/**
+ *  Bond V2 Group Shade Driver
+ *
+ *  Copyright 2025 Simon Mason
+ *
+ * V2 Revision History (by Simon Mason)
+ * 2.00 - 2025.01.01 - Initial Bond Group driver supporting group actions and state
+ * 2.01 - 2025.01.01 - Added shade controls for group devices
+ * 2.02 - 2025.01.01 - Enhanced group state tracking, improved position change handling for groups
+ * 2.03 - 2025.01.01 - Added movement tracking and proper state aggregation for group devices
+ * 2.04 - 2025.01.01 - Fixed state parsing for groups, improved refresh handling and debugging
+ * 2.05 - 2025.01.01 - Implemented unknown state for stopPositionChange, removed redundant movement tracking
+ *
+ */
+metadata {
+    definition (
+		name: "Bond V2 Group Shade Driver", 
+		namespace: "simonmason", 
+		author: "Simon Mason",
+		importUrl: "https://raw.githubusercontent.com/simonmason/hubitat-bond-v2/master/drivers/Bond_V2_Group_Shade_Driver.groovy"
+	) {
+        capability "Switch"
+        capability "WindowShade"
+        capability "Refresh"
+		
+        command "toggle"
+        command "stop"
+        command "setPosition", [[name: "position*", type: "NUMBER", description: "Shade position (0-100)"]]
+        command "startPositionChange", [[name: "direction*", type: "ENUM", description: "Direction", constraints: ["open", "close"]]]
+        command "stopPositionChange"
+        command "fixGroupState", [[name:"State*", type: "ENUM", description: "Group State", constraints: ["on","off"] ] ]
+		
+        attribute "groupState", "string"
+        attribute "position", "number"
+        attribute "moving", "enum", ["opening", "closing", "stopped"]
+    }
+}
+
+def installed() {
+    log.debug "Bond V2 Group Shade Driver installed"
+    initialize()
+}
+
+def updated() {
+    log.debug "Bond V2 Group Shade Driver updated"
+    initialize()
+}
+
+def initialize() {
+    log.debug "Initializing Bond V2 Group Shade Driver"
+    sendEvent(name: "position", value: 100) // Default position - closed
+    sendEvent(name: "windowShade", value: "closed")
+    sendEvent(name: "switch", value: "off")
+    sendEvent(name: "groupState", value: "mixed") // Start with mixed since we don't know individual device states
+    sendEvent(name: "moving", value: "stopped")
+    unschedule()
+}
+
+// Switch capability methods
+def on() {
+    open()
+}
+
+def off() {
+    close()
+}
+
+def toggle() {
+	parent.handleGroupAction(device, "TogglePower")
+    // Update local state optimistically
+    def currentState = device.currentValue("windowShade")
+    if (currentState == "open") {
+        updateShadeState("closed", 100, "off")
+    } else {
+        updateShadeState("open", 0, "on")
+    }
+}
+
+// WindowShade capability methods
+def open() {
+    log.debug "Opening shade group"
+	parent.handleGroupAction(device, "Open")
+    updateShadeState("open", 0, "on")
+}
+
+def close() {
+    log.debug "Closing shade group"
+	parent.handleGroupAction(device, "Close")
+    updateShadeState("closed", 100, "off")
+}
+
+def stop() {
+    log.debug "Stopping shade group"
+    unschedule(checkMovementProgress)
+    sendEvent(name: "moving", value: "stopped")
+	parent.handleGroupStop(device)
+    // Refresh group state after stopping
+    runIn(2, refresh)
+}
+
+def setPosition(position) {
+    log.info "Setting shade group position to ${position}%"
+    
+    // Validate position range
+    if (position < 0) position = 0
+    if (position > 100) position = 100
+    
+    // Handle special cases first for backward compatibility
+    if (position == 0) {
+        log.info "Position 0: Opening shade group"
+        open()
+        return
+    } else if (position == 100) {
+        log.info "Position 100: Closing shade group"
+        close()
+        return
+    }
+    
+    // Try to use proper SetPosition API call for groups
+    parent.handleGroupSetPosition(device, position)
+    
+    // Update device attributes based on position
+    sendEvent(name: "position", value: position)
+    if (position == 0) {
+        updateShadeState("open", 0, "on")
+    } else if (position == 100) {
+        updateShadeState("closed", 100, "off")
+    } else {
+        updateShadeState("partially open", position, "on")
+    }
+}
+
+def setLevel(level) {
+    // Support for apps that use setLevel instead of setPosition
+    setPosition(level)
+}
+
+def startPositionChange(direction) {
+    log.debug "Starting group position change: ${direction}"
+    
+    sendEvent(name: "moving", value: direction == "open" ? "opening" : "closing")
+    
+    if (direction == "open") {
+        parent.handleGroupStartPositionChange(device, "open")
+    } else if (direction == "close") {
+        parent.handleGroupStartPositionChange(device, "close")
+    } else {
+        log.warn "Invalid direction for startPositionChange: ${direction}"
+    }
+    
+    // Don't schedule complex tracking - let stopPositionChange handle final state
+}
+
+def stopPositionChange() {
+    log.debug "Stopping group position change"
+    unschedule()  // Cancel any scheduled tasks
+    sendEvent(name: "moving", value: "stopped")
+    parent.handleGroupStopPositionChange(device)
+    // Don't refresh - position is now unknown after Hold command
+}
+
+def refresh() {
+    log.debug "Refreshing shade group status"
+    parent.handleGroupRefresh(device)
+}
+
+def fixGroupState(state) {
+	parent.fixGroupState(device, state)
+}
+
+def updateShadeState(windowShadeValue, positionValue, switchValue) {
+    sendEvent(name: "windowShade", value: windowShadeValue)
+    sendEvent(name: "position", value: positionValue)
+    sendEvent(name: "switch", value: switchValue)
+    
+    // Update group state based on position
+    if (positionValue == 0) {
+        sendEvent(name: "groupState", value: "open")
+    } else if (positionValue == 100) {
+        sendEvent(name: "groupState", value: "closed")
+    } else {
+        sendEvent(name: "groupState", value: "mixed")
+    }
+}

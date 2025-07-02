@@ -1,0 +1,1726 @@
+/**
+ *  Bond Home Integration V2
+ *
+ *  Copyright 2019-2020 Dominick Meglio
+ *  Copyright 2025 Simon Mason
+ *
+ * Original Revision History (by Dominick Meglio)
+ * 2020.01.18 - Added setPosition support for motorized shades, mapping a special value of 50 to the Preset command
+ * 2019.12.01 - Fixed an issue where dimmers wouldn't work with fans that support direction controls, fixed an issue setting flame height
+ * 2019.11.24 - Added support for timer based fan light dimmers and flame height adjustment for fireplaces
+ * 2019.12.14 - Added support for Switch capability to the motorized shades for compatibility
+ * 2020.01.02 - Fixed an issue where fan speed wouldn't be set properly (thanks jchurch for the troubleshooting!)
+ * 2020.02.01 - Fixed an issue where looking for devices was incorrect which broke Smart By BOND devices (thanks mcneillk for the fix!)
+ * 2020.03.23 - Added the ability to fix device state when it's out of sync (thanks stephen_nutt for the suggestion)
+ * 2020.04.13 - Added a stop command to motorized shades to stop an open/close at the current position (suggested by jchurch)
+ * 2020.04.21 - Added better logging for connection issues to the hub
+ * 2020.05.04 - Error logging improvements
+ * 2020.06.28 - Added toggle command to all devices (suggested by jchurch) and support for having multiple Smart by BOND devices (discovered by jhciotti)
+ *
+ * V2 Revision History (by Simon Mason)
+ * 2.00 - 2025.01.01 - Initial V2 version: Multi-hub support, improved setPosition for shades with proper API calls, Bond groups support
+ * 2.01 - 2025.01.01 - Enhanced position change tracking, improved group state management, added group state refresh
+ * 2.02 - 2025.01.01 - Added proper movement tracking for individual shades and groups, improved state synchronization
+ * 2.03 - 2025.01.01 - Fixed method call bug, implemented unknown state for Hold/Preset commands, simplified movement logic
+ * 2.04 - 2025.01.01 - Added complete fan control support with speed, direction, and breeze mode capabilities
+ * 2.05 - 2025.01.01 - Added 3-speed vs 5-speed fan configuration support, fixed duplicate method issues
+ *
+ */
+ 
+ def getDeviceProperties(id, ip, token) {
+	def params = [
+		uri: "http://${ip}",
+		path: "/v2/devices/${id.key}/properties",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': token ]
+	]
+	def result = null
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getDeviceProperties", resp)) {
+				result = resp.data
+			}
+		}
+	}
+	catch (e) {
+		checkHttpResponse("getDeviceProperties", e.getResponse())
+	}
+	return result
+}
+
+def findChildDevice(deviceKey) {
+	return getChildDevice("bond:" + deviceKey)
+}
+
+def findComponentDevice(dev, deviceKey) {
+	return dev.getChildDevice("bond:" + deviceKey)
+}
+
+def getBondInfoFromDevice(device) {
+	def parts = device?.deviceNetworkId.replace("bond:", "").split(":")
+	if (parts.size() >= 2) {
+		def hubId = parts[0]
+		def deviceId = parts[1]
+		def hubData = state.bondHubs[hubId]
+		
+		// Check if this is a group device
+		def isGroup = false
+		if (parts.size() >= 3 && parts[1] == "group") {
+			isGroup = true
+			deviceId = parts[2]
+		}
+		
+		return [
+			hubId: hubId,
+			deviceId: deviceId,
+			ip: hubData?.ip,
+			token: hubData?.token,
+			isGroup: isGroup
+		]
+	}
+	return null
+}
+
+def deleteComponentDevice(dev, deviceKey) {
+	if (dev.getChildDevice("bond:" + deviceKey + ":fan"))
+		dev.deleteChildDevice("bond:" + deviceKey + ":fan")
+	if (dev.getChildDevice("bond:" + deviceKey + ":light"))
+		dev.deleteChildDevice("bond:" + deviceKey + ":light")
+}
+
+def createChildDevices() {
+	// Create groups
+	if (groups != null) {
+		for (group in groups) {
+			def groupDevice = findChildDevice(group)
+			if (!groupDevice) {
+				try {
+					def deviceName = state.groupList?.get(group)
+					if (deviceName) {
+						groupDevice = addChildDevice("simonmason", "Bond V2 Group Shade Driver", "bond:" + group, 1234, ["name": deviceName, isComponent: false])
+						log.info "Created group device: ${deviceName}"
+					} else {
+						log.error "Cannot create group device ${group}: missing device name in state.groupList"
+					}
+				} catch (Exception e) {
+					log.error "Failed to create group device ${group}: ${e.message}"
+				}
+			} else {
+				logDebug "Group device ${group} already exists: ${groupDevice.name}"
+			}
+		}
+	}
+	
+	// Create fans
+	if (fans != null) {
+		for (fan in fans) {
+			def fanDevice = findChildDevice(fan)
+			if (!fanDevice) {
+				try {
+					def deviceName = state.fanList?.get(fan)
+					if (deviceName) {
+						if (state.fanDetails[fan]?.contains("SetDirection"))
+							fanDevice = addChildDevice("simonmason", "Bond Fan With Direction V2", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
+						else
+							fanDevice = addChildDevice("simonmason", "Bond V2 Fan Driver", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
+						log.info "Created fan device: ${deviceName}"
+					} else {
+						log.error "Cannot create fan device ${fan}: missing device name in state.fanList"
+					}
+				} catch (Exception e) {
+					log.error "Failed to create fan device ${fan}: ${e.message}"
+				}
+			} else {
+				logDebug "Fan device ${fan} already exists: ${fanDevice.name}"
+			}
+		}
+	}
+	
+	// Create shades
+	if (shades != null) {
+		for (shade in shades) {
+			def shadeDevice = findChildDevice(shade)
+			if (!shadeDevice) {
+				try {
+					def deviceName = state.shadeList?.get(shade)
+					if (deviceName) {
+						shadeDevice = addChildDevice("simonmason", "Bond V2 Shade Driver", "bond:" + shade, 1234, ["name": deviceName, isComponent: false])
+						log.info "Created shade device: ${deviceName}"
+					} else {
+						log.error "Cannot create shade device ${shade}: missing device name in state.shadeList"
+					}
+				} catch (Exception e) {
+					log.error "Failed to create shade device ${shade}: ${e.message}"
+				}
+			} else {
+				logDebug "Shade device ${shade} already exists: ${shadeDevice.name}"
+			}
+		}
+	}
+	
+	// Create generic devices
+	if (genericDevices != null) {
+		for (generic in genericDevices) {
+			def genericDevice = findChildDevice(generic)
+			if (!genericDevice) {
+				try {
+					def deviceName = state.genericList?.get(generic)
+					if (deviceName) {
+						genericDevice = addChildDevice("simonmason", "Bond Generic Device V2", "bond:" + generic, 1234, ["name": deviceName, isComponent: false])
+						log.info "Created generic device: ${deviceName}"
+					} else {
+						log.error "Cannot create generic device ${generic}: missing device name in state.genericList"
+					}
+				} catch (Exception e) {
+					log.error "Failed to create generic device ${generic}: ${e.message}"
+				}
+			} else {
+				logDebug "Generic device ${generic} already exists: ${genericDevice.name}"
+			}
+		}
+	}
+}
+
+def cleanupChildDevices() {
+	for (device in getChildDevices()) {
+		def deviceKey = device.deviceNetworkId.replace("bond:", "")
+		def deviceFound = false
+		
+		// Check if device is still selected
+		for (group in (groups ?: [])) {
+			if (group == deviceKey) {
+				deviceFound = true
+				break
+			}
+		}
+		
+		if (!deviceFound) {
+			for (fan in (fans ?: [])) {
+				if (fan == deviceKey) {
+					deviceFound = true
+					break
+				}
+			}
+		}
+		
+		if (!deviceFound) {
+			for (shade in (shades ?: [])) {
+				if (shade == deviceKey) {
+					deviceFound = true
+					break
+				}
+			}
+		}
+		
+		if (!deviceFound) {
+			for (generic in (genericDevices ?: [])) {
+				if (generic == deviceKey) {
+					deviceFound = true
+					break
+				}
+			}
+		}
+		
+		if (!deviceFound) {
+			deleteChildDevice(device.deviceNetworkId)
+		}
+	}
+}
+
+def subscribeSensorEvents() {
+	// No sensor events to subscribe to in V2
+}
+
+def updateDevices() {
+	// Update all devices from all hubs
+	state.bondHubs.each { hubId, hubData ->
+		updateDevicesFromHub(hubId, hubData)
+	}
+}
+
+def updateDevicesFromHub(hubId, hubData) {
+	// Implementation for updating devices from specific hub
+	// This would be similar to the original updateDevices method but for a specific hub
+}
+
+// ==========================================
+// SHADE DEVICE ACTION HANDLERS
+// ==========================================
+
+def handleOpen(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Open event for ${bondInfo.deviceId}"
+    if (executeAction(bondInfo, "Open") && shouldSendEvent(bondInfo.deviceId)) {
+        device.sendEvent(name: "switch", value: "on")
+        device.sendEvent(name: "windowShade", value: "open")
+        device.sendEvent(name: "position", value: 0) // Bond API: 0 = open
+    }
+}
+
+def handleClose(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Close event for ${bondInfo.deviceId}"
+    if (executeAction(bondInfo, "Close") && shouldSendEvent(bondInfo.deviceId)) {
+        device.sendEvent(name: "switch", value: "off")
+        device.sendEvent(name: "windowShade", value: "closed")
+        device.sendEvent(name: "position", value: 100) // Bond API: 100 = closed
+    }
+}
+
+def handleStop(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Stop event for ${bondInfo.deviceId}"
+    executeAction(bondInfo, "Hold")
+}
+
+def handlePreset(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Preset event for ${bondInfo.deviceId}"
+    if (executeAction(bondInfo, "Preset")) {
+        // After Preset command, position is unknown (as per Bond API docs)
+        device.sendEvent(name: "windowShade", value: "unknown")
+        device.sendEvent(name: "position", value: -1)
+    }
+}
+
+def handleSetPosition(device, position) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling SetPosition event for ${bondInfo.deviceId} to position ${position}"
+	
+	// Check if device supports SetPosition action
+	def deviceKey = "${bondInfo.hubId}:${bondInfo.deviceId}"
+	def deviceActions = state.shadeDetails[deviceKey]
+	
+	if (deviceActions?.contains("SetPosition")) {
+		if (executeAction(bondInfo, "SetPosition", position)) {
+			device.sendEvent(name: "position", value: position)
+			if (position == 0) {
+				device.sendEvent(name: "switch", value: "on")
+				device.sendEvent(name: "windowShade", value: "open")
+			} else if (position == 100) {
+				device.sendEvent(name: "switch", value: "off")
+				device.sendEvent(name: "windowShade", value: "closed")
+			} else {
+				device.sendEvent(name: "windowShade", value: "partially open")
+			}
+		}
+	} else {
+		log.warn "Device ${bondInfo.deviceId} does not support SetPosition action"
+		// Fall back to open/close for extreme positions
+		if (position <= 10) {
+			handleOpen(device)
+		} else if (position >= 90) {
+			handleClose(device)
+		} else {
+			log.warn "Cannot set position ${position} - device only supports open/close"
+		}
+	}
+}
+
+def handleStartPositionChange(device, direction) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling StartPositionChange for ${bondInfo.deviceId} direction: ${direction}"
+	
+	if (direction == "open") {
+		executeAction(bondInfo, "Open")
+	} else if (direction == "close") {
+		executeAction(bondInfo, "Close")
+	}
+}
+
+def handleStopPositionChange(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling StopPositionChange for ${bondInfo.deviceId}"
+	executeAction(bondInfo, "Hold")
+	
+	// After Hold command, position is unknown
+	device.sendEvent(name: "windowShade", value: "unknown")
+	device.sendEvent(name: "position", value: -1)
+	device.sendEvent(name: "moving", value: "stopped")
+}
+
+def handleShadeRefresh(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Refreshing shade ${bondInfo.deviceId} state"
+	def deviceState = getShadeState(bondInfo)
+	if (deviceState != null) {
+		updateShadeDeviceState(device, deviceState)
+	} else {
+		log.warn "Could not retrieve state for shade ${bondInfo.deviceId} - skipping state update"
+	}
+}
+
+def getShadeState(bondInfo) {
+	def params = [
+		uri: "http://${bondInfo.ip}",
+		path: "/v2/devices/${bondInfo.deviceId}/state",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': bondInfo.token ]
+	]
+	def stateToReturn = null
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getShadeState", resp)) {
+				stateToReturn = resp.data
+				logDebug "Raw shade state from Bond API: ${resp.data}"
+			}
+		}
+	}
+	catch (java.net.NoRouteToHostException e) {
+		log.error "getShadeState: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (org.apache.http.conn.ConnectTimeoutException e) {
+		log.error "getShadeState: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (Exception e) {
+		log.error "getShadeState error for device ${bondInfo.deviceId}: ${e.message}"
+		checkHttpResponse("getShadeState", e.getResponse())
+	}
+	return stateToReturn
+}
+
+def updateShadeDeviceState(device, deviceState) {
+	logDebug "Updating shade device state: ${deviceState}"
+	
+	// Check if this shade supports position (advanced shades)
+	def hasPositionSupport = deviceState.position != null
+	
+	if (hasPositionSupport) {
+		// Advanced shades with SetPosition support
+		logDebug "Advanced shade with position support: ${deviceState.position}"
+		device.sendEvent(name: "position", value: deviceState.position)
+		
+		if (deviceState.position == 0) {
+			device.sendEvent(name: "switch", value: "on")
+			device.sendEvent(name: "windowShade", value: "open")
+		} else if (deviceState.position == 100) {
+			device.sendEvent(name: "switch", value: "off")
+			device.sendEvent(name: "windowShade", value: "closed")
+		} else {
+			device.sendEvent(name: "switch", value: "on")
+			device.sendEvent(name: "windowShade", value: "partially open")
+		}
+	} else if (deviceState.open != null) {
+		// Basic shades with only open/close support
+		logDebug "Basic shade with open/close only: open=${deviceState.open}"
+		
+		if (deviceState.open == 1) {
+			device.sendEvent(name: "switch", value: "on")
+			device.sendEvent(name: "windowShade", value: "open")
+			device.sendEvent(name: "position", value: 0) // Bond API: 0 = open
+		} else if (deviceState.open == 0) {
+			device.sendEvent(name: "switch", value: "off")
+			device.sendEvent(name: "windowShade", value: "closed")
+			device.sendEvent(name: "position", value: 100) // Bond API: 100 = closed
+		}
+	} else {
+		// No clear state information - this might happen after "Hold" command
+		logDebug "No clear state information from Bond API, device may be in hold/unknown state"
+		
+		// Don't update position or shade state if we can't determine it
+		// Just ensure we're not showing as moving
+		log.warn "Shade ${device.name} state unclear from Bond API response: ${deviceState}"
+		
+		// If we absolutely have no state info, leave current state as-is
+		// but make sure we're not stuck in moving state
+	}
+	
+	// Update moving state - shade has stopped moving
+	device.sendEvent(name: "moving", value: "stopped")
+}
+
+def fixShadeState(device, shade) {
+	logDebug "Fixing shade state for ${device.name} to ${shade}"
+	if (shade == "open") {
+		device.sendEvent(name: "switch", value: "on")
+		device.sendEvent(name: "windowShade", value: "open")
+		device.sendEvent(name: "position", value: 0)
+	} else {
+		device.sendEvent(name: "switch", value: "off")
+		device.sendEvent(name: "windowShade", value: "closed")
+		device.sendEvent(name: "position", value: 100)
+	}
+	device.sendEvent(name: "moving", value: "stopped")
+}
+
+// ==========================================
+// GROUP DEVICE ACTION HANDLERS
+// ==========================================
+
+def handleGroupAction(device, action) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Group Action ${action} for group ${bondInfo.deviceId}"
+	executeAction(bondInfo, action)
+}
+
+def handleGroupSetPosition(device, position) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Group SetPosition for group ${bondInfo.deviceId} to position ${position}"
+	executeAction(bondInfo, "SetPosition", position)
+}
+
+def handleGroupStop(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Group Stop for group ${bondInfo.deviceId}"
+	executeAction(bondInfo, "Hold")
+}
+
+def handleGroupStartPositionChange(device, direction) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Group StartPositionChange for group ${bondInfo.deviceId} direction: ${direction}"
+	
+	if (direction == "open") {
+		executeAction(bondInfo, "Open")
+	} else if (direction == "close") {
+		executeAction(bondInfo, "Close")
+	}
+}
+
+def handleGroupStopPositionChange(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Group StopPositionChange for group ${bondInfo.deviceId}"
+	executeAction(bondInfo, "Hold")
+	
+	// After Hold command, group position is unknown
+	device.sendEvent(name: "windowShade", value: "unknown")
+	device.sendEvent(name: "position", value: -1)
+	device.sendEvent(name: "groupState", value: "unknown")
+	device.sendEvent(name: "moving", value: "stopped")
+}
+
+def handleGroupRefresh(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Refreshing group ${bondInfo.deviceId} state"
+	
+	// Groups don't have state endpoints in Bond API, so we need to check individual devices
+	// First, get the group details to see which devices are in it
+	def groupState = getGroupState(bondInfo)
+	if (groupState != null) {
+		updateGroupDeviceState(device, groupState)
+	} else {
+		log.warn "Group state refresh not fully supported by Bond API - using estimated state"
+		// Update group state based on what we can infer
+		def currentPosition = device.currentValue("position") ?: 50
+		if (currentPosition == 0) {
+			device.sendEvent(name: "groupState", value: "open")
+		} else if (currentPosition == 100) {
+			device.sendEvent(name: "groupState", value: "closed")
+		} else {
+			device.sendEvent(name: "groupState", value: "mixed")
+		}
+	}
+}
+
+def getGroupState(bondInfo) {
+	def params = [
+		uri: "http://${bondInfo.ip}",
+		path: "/v2/groups/${bondInfo.deviceId}/state",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': bondInfo.token ]
+	]
+	def stateToReturn = null
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getGroupState", resp)) {
+				stateToReturn = resp.data
+				logDebug "Raw group state from Bond API: ${resp.data}"
+			}
+		}
+	}
+	catch (java.net.NoRouteToHostException e) {
+		log.error "getGroupState: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (org.apache.http.conn.ConnectTimeoutException e) {
+		log.error "getGroupState: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (Exception e) {
+		// Group state endpoint may not exist or may return 404
+		if (e.getResponse()?.status == 404) {
+			logDebug "Group state endpoint not available - this is expected for Bond groups"
+		} else {
+			log.error "getGroupState error for group ${bondInfo.deviceId}: ${e.message}"
+			checkHttpResponse("getGroupState", e.getResponse())
+		}
+	}
+	return stateToReturn
+}
+
+def updateGroupDeviceState(device, groupState) {
+	logDebug "Updating group device state: ${groupState}"
+	
+	// Check if we got valid state data
+	if (groupState == null || groupState.isEmpty()) {
+		log.warn "No valid group state data received - not updating device state"
+		return
+	}
+	
+	// Update based on Bond's group state response (if available)
+	if (groupState.open != null) {
+		if (groupState.open == 1) {
+			device.updateShadeState("open", 0, "on")
+			device.sendEvent(name: "groupState", value: "open")
+		} else if (groupState.open == 0) {
+			device.updateShadeState("closed", 100, "off")
+			device.sendEvent(name: "groupState", value: "closed")
+		} else {
+			// null value indicates mixed state
+			device.updateShadeState("partially open", 50, "on")
+			device.sendEvent(name: "groupState", value: "mixed")
+		}
+	}
+	
+	// If Bond provides position info for groups (unlikely but possible)
+	else if (groupState.position != null) {
+		device.sendEvent(name: "position", value: groupState.position)
+		if (groupState.position == 0) {
+			device.updateShadeState("open", 0, "on")
+			device.sendEvent(name: "groupState", value: "open")
+		} else if (groupState.position == 100) {
+			device.updateShadeState("closed", 100, "off")
+			device.sendEvent(name: "groupState", value: "closed")
+		} else {
+			device.updateShadeState("partially open", groupState.position, "on")
+			device.sendEvent(name: "groupState", value: "mixed")
+		}
+	}
+	
+	// If we have no clear state indicators, don't update position
+	else {
+		log.warn "Group state unclear from Bond API - not updating position. State: ${groupState}"
+		// Just ensure group state reflects uncertainty
+		device.sendEvent(name: "groupState", value: "mixed")
+	}
+}
+
+def fixGroupState(device, state) {
+	logDebug "Fixing group state for ${device.name} to ${state}"
+	device.sendEvent(name: "groupState", value: state)
+	device.sendEvent(name: "switch", value: state == "on" ? "on" : "off")
+	
+	// Update other attributes consistently
+	if (state == "on") {
+		device.sendEvent(name: "windowShade", value: "open")
+		device.sendEvent(name: "position", value: 0)
+	} else {
+		device.sendEvent(name: "windowShade", value: "closed")
+		device.sendEvent(name: "position", value: 100)
+	}
+}
+
+// ==========================================
+// FAN DEVICE ACTION HANDLERS
+// ==========================================
+
+def handleFanOn(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan On event for ${bondInfo.deviceId}"
+	if (executeAction(bondInfo, "TurnOn")) {
+		// Update switch state immediately
+		device.sendEvent(name: "switch", value: "on")
+		
+		// Refresh to get actual state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
+def handleFanOff(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Off event for ${bondInfo.deviceId}"
+	if (executeAction(bondInfo, "TurnOff")) {
+		// Update states immediately
+		device.sendEvent(name: "switch", value: "off")
+		device.sendEvent(name: "speed", value: "off")
+		device.sendEvent(name: "level", value: 0)
+		
+		// Refresh to confirm state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
+def handleFanSpeed(device, speed) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Speed event for ${bondInfo.deviceId} to speed ${speed}"
+	
+	// Get the fan's speed configuration
+	def speedLevels = device.getSetting("speedLevels") ?: "3"
+	
+	def action = ""
+	def argument = null
+	
+	switch (speed) {
+		case "off":
+			action = "TurnOff"
+			break
+		case "low":
+			action = "SetSpeed"
+			argument = 1
+			break
+		case "medium-low":
+			action = "SetSpeed"
+			if (speedLevels == "3") {
+				// For 3-speed fans, map medium-low to medium (speed 2)
+				argument = 2
+			} else {
+				argument = 2
+			}
+			break
+		case "medium":
+			action = "SetSpeed"
+			if (speedLevels == "3") {
+				argument = 2  // 3-speed: medium is speed 2
+			} else {
+				argument = 3  // 5-speed: medium is speed 3
+			}
+			break
+		case "medium-high":
+			action = "SetSpeed"
+			if (speedLevels == "3") {
+				// For 3-speed fans, map medium-high to high (speed 3)
+				argument = 3
+			} else {
+				argument = 4
+			}
+			break
+		case "high":
+			action = "SetSpeed"
+			if (speedLevels == "3") {
+				argument = 3  // 3-speed: high is speed 3
+			} else {
+				argument = 5  // 5-speed: high is speed 5
+			}
+			break
+		case "on":
+			action = "TurnOn"
+			break
+		case "auto":
+			action = "TurnOn" // Some fans may have auto mode
+			break
+		default:
+			log.warn "Unknown fan speed: ${speed}"
+			return
+	}
+	
+	if (executeAction(bondInfo, action, argument)) {
+		// Update switch state immediately for off command
+		if (speed == "off") {
+			device.sendEvent(name: "switch", value: "off")
+			device.sendEvent(name: "speed", value: "off")
+			device.sendEvent(name: "level", value: 0)
+		} else {
+			// For speed changes, update switch to on and set preliminary speed
+			device.sendEvent(name: "switch", value: "on")
+			device.sendEvent(name: "speed", value: speed)
+			
+			// Calculate level based on speed
+			def levelValue = calculateLevelFromSpeed(speed, speedLevels)
+			device.sendEvent(name: "level", value: levelValue)
+		}
+		
+		// Refresh to get actual state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
+def calculateLevelFromSpeed(speed, speedLevels) {
+	def levelValue = 50
+	
+	if (speedLevels == "3") {
+		// 3-speed mapping
+		switch (speed) {
+			case "low":
+				levelValue = 25
+				break
+			case "medium":
+			case "medium-low":
+				levelValue = 50
+				break
+			case "high":
+			case "medium-high":
+				levelValue = 85
+				break
+			case "on":
+				levelValue = 50
+				break
+			case "auto":
+				levelValue = 50
+				break
+			default:
+				levelValue = 50
+		}
+	} else {
+		// 5-speed mapping
+		switch (speed) {
+			case "low":
+				levelValue = 15
+				break
+			case "medium-low":
+				levelValue = 35
+				break
+			case "medium":
+				levelValue = 55
+				break
+			case "medium-high":
+				levelValue = 75
+				break
+			case "high":
+				levelValue = 95
+				break
+			case "on":
+				levelValue = 55
+				break
+			case "auto":
+				levelValue = 50
+				break
+			default:
+				levelValue = 55
+		}
+	}
+	
+	return levelValue
+}
+
+def handleFanCycleSpeed(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Cycle Speed event for ${bondInfo.deviceId}"
+	
+	// Check if device supports CycleSpeed action
+	def deviceKey = "${bondInfo.hubId}:${bondInfo.deviceId}"
+	def deviceActions = state.fanDetails[deviceKey]
+	
+	if (deviceActions?.contains("CycleSpeed")) {
+		if (executeAction(bondInfo, "CycleSpeed")) {
+			// Refresh to get the new speed from Bond API
+			runIn(1, "handleFanRefreshDelayed", [data: [device: device]])
+		}
+	} else {
+		// Manual cycle through speeds based on fan configuration
+		def currentSpeed = device.currentValue("speed") ?: "off"
+		def speedLevels = device.getSetting("speedLevels") ?: "3"
+		def nextSpeed = "medium"
+		
+		if (speedLevels == "3") {
+			// 3-speed cycling: off -> low -> medium -> high -> off
+			switch (currentSpeed) {
+				case "off":
+					nextSpeed = "low"
+					break
+				case "low":
+					nextSpeed = "medium"
+					break
+				case "medium":
+				case "medium-low":  // Handle if somehow set to medium-low
+					nextSpeed = "high"
+					break
+				case "high":
+				case "medium-high": // Handle if somehow set to medium-high
+					nextSpeed = "off"
+					break
+				default:
+					nextSpeed = "low"
+			}
+		} else {
+			// 5-speed cycling: off -> low -> medium-low -> medium -> medium-high -> high -> off
+			switch (currentSpeed) {
+				case "off":
+					nextSpeed = "low"
+					break
+				case "low":
+					nextSpeed = "medium-low"
+					break
+				case "medium-low":
+					nextSpeed = "medium"
+					break
+				case "medium":
+					nextSpeed = "medium-high"
+					break
+				case "medium-high":
+					nextSpeed = "high"
+					break
+				case "high":
+					nextSpeed = "off"
+					break
+				default:
+					nextSpeed = "low"
+			}
+		}
+		
+		handleFanSpeed(device, nextSpeed)
+	}
+}
+
+def handleFanRefreshDelayed(data) {
+	handleFanRefresh(data.device)
+}
+
+def handleFanDirection(device, direction) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Direction event for ${bondInfo.deviceId} to direction ${direction}"
+	
+	def action = "SetDirection"
+	def argument = (direction == "reverse") ? -1 : 1
+	
+	if (executeAction(bondInfo, action, argument)) {
+		// Update direction immediately
+		device.sendEvent(name: "direction", value: direction)
+		
+		// Refresh to confirm state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
+def handleFanBreeze(device, breezeValue) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Breeze event for ${bondInfo.deviceId} to ${breezeValue}"
+	
+	def action = (breezeValue == "on") ? "BreezeOn" : "BreezeOff"
+	
+	if (executeAction(bondInfo, action)) {
+		// Update breeze state immediately
+		device.sendEvent(name: "breeze", value: breezeValue)
+		
+		// Refresh to confirm state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
+def handleFanRefresh(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Refreshing fan ${bondInfo.deviceId} state"
+	def deviceState = getFanState(bondInfo)
+	if (deviceState != null) {
+		updateFanDeviceState(device, deviceState)
+	} else {
+		log.warn "Could not retrieve state for fan ${bondInfo.deviceId} - skipping state update"
+	}
+}
+
+def getFanState(bondInfo) {
+	def params = [
+		uri: "http://${bondInfo.ip}",
+		path: "/v2/devices/${bondInfo.deviceId}/state",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': bondInfo.token ]
+	]
+	def stateToReturn = null
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getFanState", resp)) {
+				stateToReturn = resp.data
+				logDebug "Raw fan state from Bond API: ${resp.data}"
+			}
+		}
+	}
+	catch (java.net.NoRouteToHostException e) {
+		log.error "getFanState: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (org.apache.http.conn.ConnectTimeoutException e) {
+		log.error "getFanState: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (Exception e) {
+		log.error "getFanState error for device ${bondInfo.deviceId}: ${e.message}"
+		checkHttpResponse("getFanState", e.getResponse())
+	}
+	return stateToReturn
+}
+
+def updateFanDeviceState(device, deviceState) {
+	logDebug "Updating fan device state from Bond API: ${deviceState}"
+	
+	// Update power state
+	if (deviceState.power != null) {
+		def powerState = (deviceState.power == 1) ? "on" : "off"
+		device.sendEvent(name: "switch", value: powerState)
+		logDebug "Updated switch to: ${powerState}"
+	}
+	
+	// Update fan speed
+	if (deviceState.speed != null) {
+		def speedLevels = device.getSetting("speedLevels") ?: "3"
+		def speedName = "medium"
+		
+		if (speedLevels == "3") {
+			// 3-speed mapping
+			switch (deviceState.speed) {
+				case 0:
+					speedName = "off"
+					break
+				case 1:
+					speedName = "low"
+					break
+				case 2:
+					speedName = "medium"
+					break
+				case 3:
+					speedName = "high"
+					break
+				default:
+					speedName = "medium"
+			}
+		} else {
+			// 5-speed mapping
+			switch (deviceState.speed) {
+				case 0:
+					speedName = "off"
+					break
+				case 1:
+					speedName = "low"
+					break
+				case 2:
+					speedName = "medium-low"
+					break
+				case 3:
+					speedName = "medium"
+					break
+				case 4:
+					speedName = "medium-high"
+					break
+				case 5:
+					speedName = "high"
+					break
+				default:
+					speedName = "medium"
+			}
+		}
+		
+		device.sendEvent(name: "speed", value: speedName)
+		logDebug "Updated speed to: ${speedName}"
+		
+		// Calculate and update level
+		def levelValue = 0
+		if (speedName == "off") {
+			levelValue = 0
+		} else {
+			levelValue = calculateLevelFromSpeed(speedName, speedLevels)
+		}
+		device.sendEvent(name: "level", value: levelValue)
+		logDebug "Updated level to: ${levelValue}"
+		
+	} else if (deviceState.power == 0) {
+		// If no speed but power is off
+		device.sendEvent(name: "speed", value: "off")
+		device.sendEvent(name: "level", value: 0)
+		logDebug "Updated speed to off and level to 0 (power off)"
+	}
+	
+	// Update direction (if supported)
+	if (deviceState.direction != null && device.hasCommand("sendEvent")) {
+		def directionName = (deviceState.direction == -1) ? "reverse" : "forward"
+		device.sendEvent(name: "direction", value: directionName)
+		logDebug "Updated direction to: ${directionName}"
+	}
+	
+	// Update breeze mode (if supported)
+	if (deviceState.breeze != null) {
+		def breezeMode = (deviceState.breeze == 1) ? "on" : "off"
+		device.sendEvent(name: "breeze", value: breezeMode)
+		logDebug "Updated breeze to: ${breezeMode}"
+	}
+}
+
+def fixFanState(device, fanState) {
+	logDebug "Fixing fan state for ${device.name} to ${fanState}"
+	if (fanState == "on") {
+		device.sendEvent(name: "switch", value: "on")
+		def currentSpeed = device.currentValue("speed") ?: "medium"
+		if (currentSpeed == "off") {
+			device.sendEvent(name: "speed", value: "medium")
+			device.sendEvent(name: "level", value: 50)
+		}
+	} else {
+		device.sendEvent(name: "switch", value: "off")
+		device.sendEvent(name: "speed", value: "off")
+		device.sendEvent(name: "level", value: 0)
+	}
+}
+
+// ==========================================
+// CORE ACTION EXECUTION AND UTILITIES
+// ==========================================
+
+def executeAction(bondInfo, action) {
+	return executeAction(bondInfo, action, null)
+}
+
+def executeAction(bondInfo, action, argument) {
+	def path
+	if (bondInfo.isGroup) {
+		path = "/v2/groups/${bondInfo.deviceId}/actions/${action}"
+	} else {
+		path = "/v2/devices/${bondInfo.deviceId}/actions/${action}"
+	}
+	
+	def params = [
+		uri: "http://${bondInfo.ip}",
+		path: path,
+		contentType: "application/json",
+		headers: [ 'BOND-Token': bondInfo.token ],
+		body: argument != null ? "{\"argument\": ${argument}}" : "{}"
+	]
+	def isSuccessful = false
+	logDebug "${bondInfo.deviceId} -> calling action ${action}" + (argument != null ? " with argument ${argument}" : "") + (bondInfo.isGroup ? " (GROUP)" : "")
+	try {
+		httpPut(params) { resp ->
+			isSuccessful = checkHttpResponse("executeAction", resp)
+		}
+	}
+	catch (java.net.NoRouteToHostException e) {
+		log.error "executeAction: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (org.apache.http.conn.ConnectTimeoutException e) {
+		log.error "executeAction: connection to BOND hub appears to be down. Check if the IP is correct."
+	}
+	catch (Exception e) {
+		checkHttpResponse("executeAction", e.getResponse())
+	}
+	return isSuccessful
+}
+
+def shouldSendEvent(deviceId) {
+	// Simplified version - assume we should send events for now
+	return true
+}
+
+def logDebug(msg) {
+    if (settings?.debugOutput) {
+		log.debug msg
+	}
+}
+
+def checkHttpResponse(action, resp) {
+	if (resp.status == 200 || resp.status == 201 || resp.status == 204)
+		return true
+	else if (resp.status == 400 || resp.status == 401 || resp.status == 404 || resp.status == 409 || resp.status == 500) {
+		log.error "${action}: ${resp.status} - ${resp.getData()}"
+		return false
+	}
+	else {
+		log.error "${action}: unexpected HTTP response: ${resp.status}"
+		return false
+	}
+}
+
+def displayFooter() {
+	section() {
+		paragraph getFormat("line")
+		paragraph "<div style='color:#1A77C9;text-align:center'>Bond V2 Home Integration<br/>Based on original work by Dominick Meglio<br/>Enhanced by Simon Mason<br><br>Please consider donating to the original author if you find this valuable.</div>"
+	}       
+}
+
+def getFormat(type, myText="") {			
+    if(type == "line") return "<hr style='background-color:#1A77C9; height: 1px; border: 0;'>"
+    if(type == "title") return "<h2 style='color:#1A77C9;font-weight: bold'>${myText}</h2>"
+}
+
+definition(
+    name: "Bond V2 Home Integration",
+    namespace: "simonmason",
+    author: "Simon Mason",
+    description: "Connects to multiple Bond Home hubs with improved positioning support",
+    category: "My Apps",
+    iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
+    iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
+    iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
+	documentationLink: "https://github.com/dcmeglio/hubitat-bond/blob/master/README.md")
+
+preferences {
+	page(name: "prefMain", title: "Bond V2 Home Integration")
+	page(name: "prefTestHub", title: "Test Hub Connection")
+	page(name: "prefEditHub", title: "Edit Bond Hub")
+	page(name: "prefListDevices", title: "Bond Devices")
+}
+
+def prefMain() {
+	return dynamicPage(name: "prefMain", title: "Bond V2 Home Integration", install: true, uninstall: true) {
+		// Check for missing devices and warn user
+		def missingDevices = checkForMissingDevices()
+		
+		if (missingDevices.size() > 0) {
+			section("⚠️ Missing Devices") {
+				paragraph "<div style='color:red; font-weight:bold;'>The following devices appear to have been manually deleted:</div>"
+				missingDevices.each { device ->
+					paragraph "• ${device}"
+				}
+				paragraph "<div style='color:blue;'>These devices will be automatically recreated when you click 'Configure Devices' or 'Done'.</div>"
+			}
+		}
+		
+		section("Installed Bond Hubs") {
+			if (state.bondHubs == null) {
+				state.bondHubs = [:]
+			}
+			
+			if (state.bondHubs.size() > 0) {
+				state.bondHubs.each { hubId, hubData ->
+					def hubLabel = "${hubId} : ${hubData.name} (Hubitat App)"
+					def statusColor = hubData.connected ? "green" : "red"
+					def statusText = hubData.connected ? "Connected" : "Disconnected"
+					
+					href "prefEditHub", title: hubLabel, description: "IP: ${hubData.ip} - Status: ${statusText}", 
+						 params: [hubId: hubId], required: false
+				}
+			}
+		}
+		
+		section("Add Bond Hub") {
+			input("newHubName", "text", title: "Hub Name", description: "Friendly name for this hub", required: false, submitOnChange: true)
+			input("newHubIp", "text", title: "Bond Hub IP", description: "Bond Hub IP Address", required: false, submitOnChange: true)
+			input("newHubToken", "text", title: "Bond Hub Token", description: "Bond Hub Token", required: false, submitOnChange: true)
+			
+			if (newHubName && newHubIp && newHubToken) {
+				href "prefTestHub", title: "Add Hub", description: "Test connection and add ${newHubName}"
+			}
+		}
+		
+		if (state.bondHubs.size() > 0) {
+			section("Configure Devices") {
+				href "prefListDevices", title: "Configure Devices", description: "Select devices from your Bond hubs"
+			}
+		}
+		
+		section("Settings") {
+			input("refreshInterval", "number", title: "Poll Bond Hubs every N seconds", required: true, defaultValue: 30)
+            input("debugOutput", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: false, required: false)
+		}
+		
+		displayFooter()
+	}
+}
+
+def prefTestHub() {
+	def connectionStatus = ""
+	def nextPage = "prefMain"
+	
+	def hubName = newHubName
+	def hubIp = newHubIp
+	def hubToken = newHubToken
+	
+	// Store the form data in state for the test
+	if (hubName) state.tempHubName = hubName
+	if (hubIp) state.tempHubIp = hubIp  
+	if (hubToken) state.tempHubToken = hubToken
+	
+	// Use stored values if available
+	hubName = state.tempHubName ?: hubName
+	hubIp = state.tempHubIp ?: hubIp
+	hubToken = state.tempHubToken ?: hubToken
+	
+	logDebug "Testing connection with: Name='${hubName}', IP='${hubIp}', Token='${hubToken?.take(8)}...'"
+	
+	if (hubName && hubIp && hubToken) {
+		logDebug "About to call testHubConnection..."
+		def hubId = testHubConnection(hubIp, hubToken)
+		logDebug "testHubConnection returned: '${hubId}'"
+		
+		if (hubId != null && hubId != "") {
+			logDebug "Connection successful, adding hub to state"
+			// Add the hub to state
+			if (state.bondHubs == null) {
+				state.bondHubs = [:]
+			}
+			state.bondHubs[hubId] = [
+				name: hubName,
+				ip: hubIp,
+				token: hubToken,
+				connected: true
+			]
+			logDebug "Hub added to state: ${state.bondHubs[hubId]}"
+			connectionStatus = "<div style='color:green; font-weight:bold;'>✓ Connection successful!</div><br/>Hub '${hubName}' (${hubId}) has been added."
+			
+			// Clear the temp and form fields
+			state.remove("tempHubName")
+			state.remove("tempHubIp")
+			state.remove("tempHubToken")
+			app.removeSetting("newHubName")
+			app.removeSetting("newHubIp") 
+			app.removeSetting("newHubToken")
+		} else {
+			logDebug "Connection failed, hubId was null or empty"
+			connectionStatus = "<div style='color:red; font-weight:bold;'>✗ Connection failed!</div><br/>Please check your IP address and token."
+		}
+	} else {
+		logDebug "Missing information for connection test"
+		connectionStatus = "<div style='color:orange; font-weight:bold;'>⚠ Missing Information</div><br/>Please fill in all required fields.<br/>Name: '${hubName}', IP: '${hubIp}', Token: '${hubToken?.take(8)}...'"
+	}
+	
+	logDebug "Final connectionStatus: ${connectionStatus}"
+	logDebug "Final nextPage: ${nextPage}"
+	
+	return dynamicPage(name: "prefTestHub", title: "Test Hub Connection", nextPage: nextPage, uninstall: false, install: false) {
+		section("Connection Test Results") {
+			paragraph connectionStatus
+		}
+		
+		section("") {
+			paragraph "Click Next to return to the main screen."
+		}
+		
+		displayFooter()
+	}
+}
+
+def prefEditHub(params) {
+	// Handle both new method (from main screen href) and old method (from state)
+	def hubId = params?.hubId ?: state.editingHubId
+	def hubData = state.bondHubs[hubId]
+	
+	if (!hubData) {
+		return dynamicPage(name: "prefEditHub", title: "Hub Not Found", nextPage: "prefMain", uninstall: false, install: false) {
+			section("Error") {
+				paragraph "Hub not found. Returning to main screen."
+			}
+		}
+	}
+	
+	return dynamicPage(name: "prefEditHub", title: hubData.name, nextPage: "prefMain", uninstall: false, install: false) {
+		section("Hub Information") {
+			input("editHubName", "text", title: "Hub Name", description: "Friendly name for this hub", required: true, defaultValue: hubData.name)
+			input("editHubIp", "text", title: "Bond Hub IP", description: "Bond Hub IP Address", required: true, defaultValue: hubData.ip)
+			input("editHubToken", "text", title: "Bond Hub Token", description: "Bond Hub Token", required: true, defaultValue: hubData.token)
+			input("editHubId", "hidden", defaultValue: hubId)
+		}
+		
+		section("Hub Status") {
+			def statusColor = hubData.connected ? "green" : "red"
+			def statusText = hubData.connected ? "Connected" : "Disconnected"
+			paragraph "<div style='color:${statusColor}; font-weight:bold;'>${statusText}</div>"
+			paragraph "Bond ID: ${hubId}"
+			paragraph "IP Address: ${hubData.ip}"
+		}
+		
+		section("Remove Hub") {
+			input("confirmDelete", "bool", title: "Remove this hub and all its devices", defaultValue: false, submitOnChange: true)
+			input("deleteHubId", "hidden", defaultValue: hubId)
+			
+			if (confirmDelete) {
+				paragraph "<div style='color:red; font-weight:bold;'>⚠ Hub and all associated devices will be removed when you click Done</div>"
+			}
+		}
+		
+		displayFooter()
+	}
+}
+
+def prefListDevices() {
+	// Get devices from all hubs
+	getAllDevicesFromHubs()
+	
+	if (state.allDevices == null || state.allDevices.size() == 0) {
+		return dynamicPage(name: "prefListDevices", title: "Connection Error", install: true, uninstall: false) {
+			section("Error") {
+				paragraph "Unable to retrieve devices. Please verify your Bond Hub connections"
+			}
+			displayFooter()
+		}
+	} else {
+		return dynamicPage(name: "prefListDevices", title: "Devices", install: true, uninstall: false) {
+			section("Devices") {
+				if (state.groupList?.size() > 0)
+					input(name: "groups", type: "enum", title: "Groups", required: false, multiple: true, options: state.groupList, hideWhenEmpty: true)
+				if (state.fanList?.size() > 0)
+					input(name: "fans", type: "enum", title: "Fans", required: false, multiple: true, options: state.fanList, hideWhenEmpty: true)
+				if (state.shadeList?.size() > 0)
+					input(name: "shades", type: "enum", title: "Shades", required: false, multiple: true, options: state.shadeList, hideWhenEmpty: true)
+				if (state.genericList?.size() > 0)
+					input(name: "genericDevices", type: "enum", title: "Generic Devices", required: false, multiple: true, options: state.genericList, hideWhenEmpty: true)
+			}
+			displayFooter()
+		}
+	}
+}
+
+def installed() {
+	logDebug "Installed with settings: ${settings}"
+	if (state.bondHubs == null) {
+		state.bondHubs = [:]
+	}
+	initialize()
+}
+
+def updated() {
+	logDebug "Updated with settings: ${settings}"
+	
+	// Handle hub editing
+	if (editHubId && editHubName && editHubIp && editHubToken) {
+		def hubId = editHubId
+		if (state.bondHubs[hubId]) {
+			def oldHubName = state.bondHubs[hubId].name
+			state.bondHubs[hubId].name = editHubName
+			state.bondHubs[hubId].ip = editHubIp
+			state.bondHubs[hubId].token = editHubToken
+			
+			// Update device names if hub name changed
+			if (oldHubName != editHubName) {
+				updateDeviceNamesForHub(hubId, oldHubName, editHubName)
+			}
+			
+			logDebug "Updated hub ${hubId} with new settings"
+		}
+		// Clear edit settings
+		app.removeSetting("editHubId")
+		app.removeSetting("editHubName")
+		app.removeSetting("editHubIp")
+		app.removeSetting("editHubToken")
+	}
+	
+	// Handle hub deletion
+	if (confirmDelete && deleteHubId) {
+		def hubId = deleteHubId
+		logDebug "Deleting hub ${hubId}"
+		
+		// Remove all devices for this hub
+		def devicesToRemove = []
+		for (device in getChildDevices()) {
+			def deviceKey = device.deviceNetworkId.replace("bond:", "")
+			if (deviceKey.startsWith("${hubId}:")) {
+				devicesToRemove.add(device)
+			}
+		}
+		
+		devicesToRemove.each { device ->
+			logDebug "Removing device: ${device.name}"
+			deleteChildDevice(device.deviceNetworkId)
+		}
+		
+		// Remove hub from state
+		state.bondHubs.remove(hubId)
+		logDebug "Hub ${hubId} deleted successfully"
+		
+		// Clear delete settings
+		app.removeSetting("confirmDelete")
+		app.removeSetting("deleteHubId")
+	}
+	
+    unschedule()
+	unsubscribe()
+	initialize()
+}
+
+def uninstalled() {
+	logDebug "Uninstalled app"
+
+	for (device in getChildDevices()) {
+		deleteChildDevice(device.deviceNetworkId)
+	}	
+}
+
+def initialize() {
+	logDebug "initializing"
+
+	// Check for missing devices before cleanup
+	verifySelectedDevicesExist()
+	
+	cleanupChildDevices()
+	createChildDevices()
+	subscribeSensorEvents()	
+	
+	def refreshEvery = refreshInterval ?: 30
+    schedule("0/${refreshEvery} * * * * ? *", updateDevices)
+}
+
+def checkForMissingDevices() {
+	def missingDevices = []
+	
+	// Check groups
+	if (groups != null) {
+		for (group in groups) {
+			def groupDevice = findChildDevice(group)
+			if (!groupDevice) {
+				def deviceName = state.groupList?.get(group) ?: "Unknown Group"
+				missingDevices.add("Group: ${deviceName}")
+			}
+		}
+	}
+	
+	// Check fans
+	if (fans != null) {
+		for (fan in fans) {
+			def fanDevice = findChildDevice(fan)
+			if (!fanDevice) {
+				def deviceName = state.fanList?.get(fan) ?: "Unknown Fan"
+				missingDevices.add("Fan: ${deviceName}")
+			}
+		}
+	}
+	
+	// Check shades
+	if (shades != null) {
+		for (shade in shades) {
+			def shadeDevice = findChildDevice(shade)
+			if (!shadeDevice) {
+				def deviceName = state.shadeList?.get(shade) ?: "Unknown Shade"
+				missingDevices.add("Shade: ${deviceName}")
+			}
+		}
+	}
+	
+	// Check generic devices
+	if (genericDevices != null) {
+		for (generic in genericDevices) {
+			def genericDevice = findChildDevice(generic)
+			if (!genericDevice) {
+				def deviceName = state.genericList?.get(generic) ?: "Unknown Device"
+				missingDevices.add("Generic: ${deviceName}")
+			}
+		}
+	}
+	
+	return missingDevices
+}
+
+def verifySelectedDevicesExist() {
+	def missingDevices = checkForMissingDevices()
+	
+	if (missingDevices.size() > 0) {
+		log.warn "Found ${missingDevices.size()} manually deleted devices that will be recreated: ${missingDevices.join(', ')}"
+	}
+}
+
+def updateDeviceNamesForHub(hubId, oldHubName, newHubName) {
+	logDebug "Updating device names for hub ${hubId} from '${oldHubName}' to '${newHubName}'"
+	
+	for (device in getChildDevices()) {
+		def deviceKey = device.deviceNetworkId.replace("bond:", "")
+		if (deviceKey.startsWith("${hubId}:")) {
+			def currentName = device.name
+			if (currentName.startsWith("${oldHubName} - ")) {
+				def devicePortion = currentName.replace("${oldHubName} - ", "")
+				def newName = "${newHubName} - ${devicePortion}"
+				device.setName(newName)
+				log.info "Updated device name from '${currentName}' to '${newName}'"
+			}
+		}
+	}
+}
+
+def testHubConnection(ip, token) {
+	def params = [
+		uri: "http://${ip}",
+		path: "/v2/sys/version",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': token ],
+		timeout: 10
+	]
+	try {
+		def result = null
+		httpGet(params) { resp ->
+			logDebug "HTTP Response Status: ${resp.status}"
+			logDebug "HTTP Response Data: ${resp.data}"
+			if (resp.status == 200 && resp.data?.bondid) {
+				logDebug "Successfully connected to hub ${resp.data.bondid} at ${ip}"
+				result = resp.data.bondid
+			} else {
+				log.warn "Invalid response from hub at ${ip}: status=${resp.status}, data=${resp.data}"
+				result = null
+			}
+		}
+		return result
+	}
+	catch (Exception e) {
+		log.error "Failed to connect to hub at ${ip}: ${e.message}"
+		return null
+	}
+}
+
+def getAllDevicesFromHubs() {
+	state.groupList = [:]
+	state.groupDetails = [:]
+	state.fanList = [:]
+    state.fanDetails = [:]
+	state.fanProperties = [:]
+	state.shadeList = [:]
+	state.shadeDetails = [:]
+	state.shadeProperties = [:]
+	state.genericList = [:]
+	state.genericDetails = [:]
+	state.deviceList = [:]
+	state.allDevices = [:]
+	
+	state.bondHubs.each { hubId, hubData ->
+		getDevicesFromHub(hubId, hubData.ip, hubData.token)
+		getGroupsFromHub(hubId, hubData.ip, hubData.token)
+	}
+}
+
+def getDevicesFromHub(hubId, ip, token) {
+	def params = [
+		uri: "http://${ip}",
+		path: "/v2/devices",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': token ]
+	]
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getDevicesFromHub", resp)) {
+				for (deviceid in resp.data) {
+					if (deviceid.key == "_")
+						continue
+					getDeviceById(deviceid, hubId, ip, token);
+				}
+			}
+		}
+	}
+	catch (e) {
+		checkHttpResponse("getDevicesFromHub", e.getResponse())
+		state.bondHubs[hubId].connected = false
+	}
+}
+
+def getGroupsFromHub(hubId, ip, token) {
+	def params = [
+		uri: "http://${ip}",
+		path: "/v2/groups",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': token ]
+	]
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getGroupsFromHub", resp)) {
+				for (groupid in resp.data) {
+					if (groupid.key == "_")
+						continue
+					getGroupById(groupid, hubId, ip, token);
+				}
+			}
+		}
+	}
+	catch (e) {
+		// Groups endpoint might not exist on all Bond hubs
+		logDebug "Groups endpoint not available on hub ${hubId}: ${e.message}"
+		if (e.getResponse()?.status != 404) {
+			checkHttpResponse("getGroupsFromHub", e.getResponse())
+			state.bondHubs[hubId].connected = false
+		}
+	}
+}
+
+def getDeviceById(id, hubId, ip, token) {
+	def params = [
+		uri: "http://${ip}",
+		path: "/v2/devices/${id.key}",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': token ]
+	]
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getDeviceById", resp)) {
+				def deviceKey = "${hubId}:${id.key}"
+				def deviceName = "${state.bondHubs[hubId].name} - ${resp.data.name}"
+				
+				// Debug logging to see what device types we're getting
+				logDebug "Found device: ${resp.data.name} with type: ${resp.data.type}"
+				
+				state.allDevices[deviceKey] = [
+					hubId: hubId,
+					deviceId: id.key,
+					ip: ip,
+					token: token,
+					type: resp.data.type,
+					name: resp.data.name,
+					actions: resp.data.actions
+				]
+				
+				if (resp.data.type == "CF") {
+					state.fanList[deviceKey] = deviceName
+					state.fanDetails[deviceKey] = resp.data.actions
+					state.fanProperties[deviceKey] = getDeviceProperties(id, ip, token)
+				}
+				else if (resp.data.type == "MS") {
+					state.shadeList[deviceKey] = deviceName
+					state.shadeDetails[deviceKey] = resp.data.actions
+					state.shadeProperties[deviceKey] = getDeviceProperties(id, ip, token)
+				}
+				else if (resp.data.type == "GX") {
+					state.genericList[deviceKey] = deviceName
+					state.genericDetails[deviceKey] = resp.data.actions
+				}
+				else {
+					logDebug "Unknown device type '${resp.data.type}' for device '${resp.data.name}' - adding as generic"
+					state.genericList[deviceKey] = deviceName
+					state.genericDetails[deviceKey] = resp.data.actions
+				}
+			}
+		}
+	}
+	catch (e) {
+		checkHttpResponse("getDeviceById", e.getResponse())
+	}
+}
+
+def getGroupById(id, hubId, ip, token) {
+	def params = [
+		uri: "http://${ip}",
+		path: "/v2/groups/${id.key}",
+		contentType: "application/json",
+		headers: [ 'BOND-Token': token ]
+	]
+	try {
+		httpGet(params) { resp ->
+			if (checkHttpResponse("getGroupById", resp)) {
+				def deviceKey = "${hubId}:group:${id.key}"
+				def deviceName = "${state.bondHubs[hubId].name} - ${resp.data.name} (Group)"
+				
+				logDebug "Found group: ${resp.data.name} with ID: ${id.key}"
+				
+				state.allDevices[deviceKey] = [
+					hubId: hubId,
+					deviceId: id.key,
+					ip: ip,
+					token: token,
+					type: "GROUP",
+					name: resp.data.name,
+					actions: resp.data.actions ?: []
+				]
+				
+				state.groupList[deviceKey] = deviceName
+				state.groupDetails[deviceKey] = resp.data.actions ?: []
+			}
+		}
+	}
+	catch (e) {
+		checkHttpResponse("getGroupById", e.getResponse())
+	}
+}
+
+def get
