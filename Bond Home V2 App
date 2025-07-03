@@ -24,7 +24,9 @@
  * 2.03 - 2025.01.01 - Fixed method call bug, implemented unknown state for Hold/Preset commands, simplified movement logic
  * 2.04 - 2025.01.01 - Added complete fan control support with speed, direction, and breeze mode capabilities
  * 2.05 - 2025.01.01 - Added 3-speed vs 5-speed fan configuration support, fixed duplicate method issues
- * 2.06 - 2025.07.03 - (revert) Removed all light support logic and restored to pre-light state.
+ * 2.06 - 2025.07.03 - Changed device naming to "Device Name (Bond Hub HubName)" and "Device Name (Group) (Bond Hub HubName)". Existing devices are migrated to the new format automatically.
+ * 2.07 - 2025.07.03 - Added optional light support for fans with built-in lights
+ * 2.08 - 2025.07.03 - Fixed light capability implementation and separated fan/light controls
  *
  */
  
@@ -120,18 +122,35 @@ def createChildDevices() {
 				try {
 					def deviceName = state.fanList?.get(fan)
 					def fanActions = state.fanDetails[fan] ?: []
-					def hasLight = fanActions.contains("TurnLightOn") || fanActions.contains("TurnLightOff") || fanActions.contains("SetBrightness")
+					logDebug "Fan ${fan} actions: ${fanActions}"
+					
+					// Check for various light-related actions
+					def hasLight = fanActions.contains("TurnLightOn") || 
+								  fanActions.contains("TurnLightOff") || 
+								  fanActions.contains("SetBrightness") ||
+								  fanActions.contains("LightOn") ||
+								  fanActions.contains("LightOff") ||
+								  fanActions.contains("ToggleLight") ||
+								  fanActions.contains("SetLight")
+					
+					logDebug "Fan ${fan} hasLight: ${hasLight}"
+					
 					if (deviceName) {
-						if (fanActions.contains("SetDirection"))
-							fanDevice = addChildDevice("simonmason", "Bond Fan With Direction V2", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
-						else
-							fanDevice = addChildDevice("simonmason", "Bond V2 Fan Driver", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
-						log.info "Created fan device: ${deviceName}"
-						// Set hasLight attribute
-						if (hasLight) {
-							fanDevice.sendEvent(name: "hasLight", value: true, displayed: false)
+						if (fanActions.contains("SetDirection")) {
+							fanDevice = addChildDevice("simonmason", "Bond V2 Fan With Direction Driver", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
+							log.info "Created directional fan device: ${deviceName} with driver: Bond V2 Fan With Direction Driver"
 						} else {
-							fanDevice.sendEvent(name: "hasLight", value: false, displayed: false)
+							fanDevice = addChildDevice("simonmason", "Bond V2 Fan Driver", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
+							log.info "Created regular fan device: ${deviceName} with driver: Bond V2 Fan Driver"
+						}
+						log.info "Created fan device: ${deviceName}"
+						// Set hasLight attribute using the driver method
+						if (hasLight) {
+							fanDevice.updateHasLight(true)
+							log.info "Set hasLight=true for fan device: ${deviceName}"
+						} else {
+							fanDevice.updateHasLight(false)
+							log.info "Set hasLight=false for fan device: ${deviceName}"
 						}
 					} else {
 						log.error "Cannot create fan device ${fan}: missing device name in state.fanList"
@@ -1066,6 +1085,20 @@ def updateFanDeviceState(device, deviceState) {
 		device.sendEvent(name: "breeze", value: breezeMode)
 		logDebug "Updated breeze to: ${breezeMode}"
 	}
+	
+	// Update light state (if supported)
+	if (deviceState.light != null && device.isLightSupported()) {
+		def lightState = (deviceState.light == 1) ? "on" : "off"
+		device.updateLightState(lightState)
+		logDebug "Updated light state to: ${lightState}"
+	}
+	
+	// Update light brightness (if supported)
+	if (deviceState.brightness != null && device.isLightSupported()) {
+		def brightnessLevel = deviceState.brightness
+		device.updateLightLevel(brightnessLevel)
+		logDebug "Updated light brightness to: ${brightnessLevel}"
+	}
 }
 
 def fixFanState(device, fanState) {
@@ -1081,6 +1114,65 @@ def fixFanState(device, fanState) {
 		device.sendEvent(name: "switch", value: "off")
 		device.sendEvent(name: "speed", value: "off")
 		device.sendEvent(name: "level", value: 0)
+	}
+}
+
+// ==========================================
+// FAN LIGHT HANDLERS
+// ==========================================
+
+def handleFanLightOn(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Light On event for ${bondInfo.deviceId}"
+	
+	if (executeAction(bondInfo, "TurnLightOn")) {
+		// Update light state immediately
+		device.updateLightState("on")
+		
+		// Refresh to confirm state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
+def handleFanLightOff(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Light Off event for ${bondInfo.deviceId}"
+	
+	if (executeAction(bondInfo, "TurnLightOff")) {
+		// Update light state immediately
+		device.updateLightState("off")
+		
+		// Refresh to confirm state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
+def handleFanLightLevel(device, level) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Light Level event for ${bondInfo.deviceId} to level ${level}"
+	
+	// Convert percentage to Bond brightness (0-100)
+	def brightness = Math.round(level)
+	
+	if (executeAction(bondInfo, "SetBrightness", brightness)) {
+		// Update light level immediately
+		device.updateLightLevel(level)
+		
+		// Update switch state based on level
+		if (level > 0) {
+			device.updateLightState("on")
+		} else {
+			device.updateLightState("off")
+		}
+		
+		// Refresh to confirm state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
 	}
 }
 
@@ -1171,7 +1263,8 @@ definition(
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
     iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
-	documentationLink: "https://github.com/dcmeglio/hubitat-bond/blob/master/README.md")
+	documentationLink: "https://github.com/dcmeglio/hubitat-bond/blob/master/README.md"
+)
 
 preferences {
 	page(name: "prefMain", title: "Bond V2 Home Integration")
@@ -1455,19 +1548,68 @@ def uninstalled() {
 }
 
 def initialize() {
-	logDebug "initializing"
-
-	// Check for missing devices before cleanup
-	verifySelectedDevicesExist()
+	logDebug "Initializing Bond Home V2 App"
 	
-	cleanupChildDevices()
-	createChildDevices()
-	subscribeSensorEvents()	
+	// Initialize state if needed
+	if (!state.bondHubs) {
+		state.bondHubs = [:]
+	}
+	if (!state.fanList) {
+		state.fanList = [:]
+	}
+	if (!state.shadeList) {
+		state.shadeList = [:]
+	}
+	if (!state.groupList) {
+		state.groupList = [:]
+	}
+	if (!state.genericList) {
+		state.genericList = [:]
+	}
+	if (!state.fanDetails) {
+		state.fanDetails = [:]
+	}
+	if (!state.shadeDetails) {
+		state.shadeDetails = [:]
+	}
+	if (!state.groupDetails) {
+		state.groupDetails = [:]
+	}
+	if (!state.genericDetails) {
+		state.genericDetails = [:]
+	}
+	if (!state.fanProperties) {
+		state.fanProperties = [:]
+	}
+	if (!state.shadeProperties) {
+		state.shadeProperties = [:]
+	}
+	if (!state.groupProperties) {
+		state.groupProperties = [:]
+	}
+	if (!state.genericProperties) {
+		state.genericProperties = [:]
+	}
 	
-	def refreshEvery = refreshInterval ?: 30
-    schedule("0/${refreshEvery} * * * * ? *", updateDevices)
-	
+	// Update device names to new format
 	updateDeviceNamesForHubAll()
+	
+	// Migrate existing devices for light support
+	migrateExistingDevicesForLightSupport()
+	
+	// Create child devices
+	createChildDevices()
+	
+	// Clean up old devices
+	cleanupChildDevices()
+	
+	// Subscribe to events
+	subscribeSensorEvents()
+	
+	// Update devices
+	updateDevices()
+	
+	logDebug "Bond Home V2 App initialization complete"
 }
 
 def checkForMissingDevices() {
@@ -1760,4 +1902,44 @@ def getGroupById(id, hubId, ip, token) {
 	}
 }
 
-def get
+def migrateExistingDevicesForLightSupport() {
+	logDebug "Migrating existing devices for light support"
+	
+	for (device in getChildDevices()) {
+		def deviceKey = device.deviceNetworkId.replace("bond:", "")
+		def hubId = deviceKey.split(":")[0]
+		def deviceId = deviceKey.split(":")[1]
+		
+		// Check if this is a fan device
+		if (device.typeName.contains("Fan")) {
+			// Get the device's actions from state
+			def fanActions = state.fanDetails[deviceKey] ?: []
+			logDebug "Migration: Fan ${deviceKey} actions: ${fanActions}"
+			
+			// Check for various light-related actions
+			def hasLight = fanActions.contains("TurnLightOn") || 
+						  fanActions.contains("TurnLightOff") || 
+						  fanActions.contains("SetBrightness") ||
+						  fanActions.contains("LightOn") ||
+						  fanActions.contains("LightOff") ||
+						  fanActions.contains("ToggleLight") ||
+						  fanActions.contains("SetLight")
+			
+			logDebug "Migration: Fan ${deviceKey} hasLight: ${hasLight}"
+			
+			// Update the hasLight attribute
+			def currentHasLight = device.currentValue("hasLight")
+			if (currentHasLight != hasLight.toString()) {
+				device.sendEvent(name: "hasLight", value: hasLight.toString(), displayed: false)
+				log.info "Migration: Updated ${device.name} hasLight attribute to: ${hasLight}"
+			}
+		}
+	}
+}
+
+// Manual migration command for users
+def migrateDevicesForLightSupport() {
+	log.info "Manual migration: Updating existing devices for light support"
+	migrateExistingDevicesForLightSupport()
+	log.info "Manual migration complete"
+}

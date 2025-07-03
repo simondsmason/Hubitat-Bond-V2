@@ -18,6 +18,8 @@
  * 2.02 - 2025.01.01 - Improved refresh functionality and state synchronization with Bond hub
  * 2.03 - 2025.01.01 - Fixed fan speed transitions and added breeze mode support
  * 2.06 - 2025.07.03 - (revert) Removed all light support logic and restored to pre-light state.
+ * 2.07 - 2025.07.03 - Added optional light support for fans with built-in lights
+ * 2.08 - 2025.07.03 - Fixed light capability implementation and separated fan/light controls
  *
  */
 metadata {
@@ -25,12 +27,13 @@ metadata {
 		name: "Bond V2 Fan Driver", 
 		namespace: "simonmason", 
 		author: "Simon Mason",
-		importUrl: "https://raw.githubusercontent.com/simonmason/hubitat-bond-v2/master/drivers/Bond_V2_Fan_Driver.groovy"
+		importUrl: "https://raw.githubusercontent.com/simonmason/hubitat-bond-v2/master/Bond%20V2%20Fan%20Driver"
 	) {
         capability "FanControl"
         capability "Switch"
         capability "SwitchLevel"
         capability "Refresh"
+        capability "Light"
         
         command "high"
         command "medium"
@@ -41,9 +44,15 @@ metadata {
         command "breeze", [[name:"breezeValue*", type: "ENUM", description: "Breeze", constraints: ["off", "on"] ] ]
         command "fixFan", [[name:"Fan*", type: "ENUM", description: "Fan", constraints: ["on","off"] ] ]
         command "toggle"
+        command "lightOn"
+        command "lightOff"
+        command "setLightLevel", [[name: "level*", type: "NUMBER", description: "Light Level (0-100)"]]
         
         attribute "speed", "enum", ["low","medium-low","medium","medium-high","high","on","off","auto"]
         attribute "breeze", "enum", ["off", "on"]
+        attribute "hasLight", "enum", ["true", "false"]
+        attribute "lightSwitch", "enum", ["on", "off"]
+        attribute "lightLevel", "number"
     }
     
     preferences {
@@ -70,10 +79,34 @@ def initialize() {
     sendEvent(name: "switch", value: "off")
     sendEvent(name: "level", value: 0)
     sendEvent(name: "breeze", value: "off")
+    sendEvent(name: "hasLight", value: "false")
+    sendEvent(name: "lightSwitch", value: "off")
+    sendEvent(name: "lightLevel", value: 0)
+    
+    // Debug logging to check capabilities
+    log.debug "Device capabilities: ${device.getCapabilities()}"
+    log.debug "Device type: ${device.typeName}"
+    log.debug "hasLight attribute: ${device.currentValue('hasLight')}"
+    
     unschedule()
 }
 
-// FanControl capability methods
+// Check if light is supported
+def isLightSupported() {
+    return device.currentValue("hasLight") == "true"
+}
+
+// Fan control methods (primary functionality)
+def on() {
+    log.info "Turning on fan"
+    setSpeed("on")
+}
+
+def off() {
+    log.info "Turning off fan"
+    setSpeed("off")
+}
+
 def setSpeed(fanspeed) {
     log.info "Setting fan speed to ${fanspeed}"
     parent.handleFanSpeed(device, fanspeed)
@@ -86,28 +119,18 @@ def cycleSpeed() {
 
 // Direct speed commands
 def high() {
-    def speedLevels = settings?.speedLevels ?: "3"
-    if (speedLevels == "3") {
-        setSpeed("high")
-    } else {
-        setSpeed("high")
-    }
+    setSpeed("high")
 }
 
 def medium() {
-    def speedLevels = settings?.speedLevels ?: "3"
-    if (speedLevels == "3") {
-        setSpeed("medium")
-    } else {
-        setSpeed("medium")
-    }
+    setSpeed("medium")
 }
 
 def low() {
     setSpeed("low")
 }
 
-// SwitchLevel capability (for apps that use dimmer-style control)
+// SwitchLevel capability (for fan speed control)
 def setLevel(level) {
     log.info "Setting fan level to ${level}%"
     def speedLevels = settings?.speedLevels ?: "3"
@@ -138,6 +161,34 @@ def setLevel(level) {
 
 def setLevel(level, duration) {
     setLevel(level)
+}
+
+// Light control methods (only available if device has light)
+def lightOn() {
+    if (isLightSupported()) {
+        log.info "Turning on fan light"
+        parent.handleFanLightOn(device)
+    } else {
+        log.warn "Light not supported on this device"
+    }
+}
+
+def lightOff() {
+    if (isLightSupported()) {
+        log.info "Turning off fan light"
+        parent.handleFanLightOff(device)
+    } else {
+        log.warn "Light not supported on this device"
+    }
+}
+
+def setLightLevel(level) {
+    if (isLightSupported()) {
+        log.info "Setting light level to ${level}%"
+        parent.handleFanLightLevel(device, level)
+    } else {
+        log.warn "Light not supported on this device"
+    }
 }
 
 // Breeze mode
@@ -228,4 +279,27 @@ def updateFanSpeed(speed) {
 
 def updateBreezeMode(breeze) {
     sendEvent(name: "breeze", value: breeze)
+}
+
+// Light state update methods
+def updateLightState(lightState) {
+    if (isLightSupported()) {
+        sendEvent(name: "lightSwitch", value: lightState)
+        // Also update the main switch attribute for Light capability compatibility
+        sendEvent(name: "switch", value: lightState)
+    }
+}
+
+def updateLightLevel(level) {
+    if (isLightSupported()) {
+        sendEvent(name: "lightLevel", value: level)
+        // Also update the main level attribute for Light capability compatibility
+        sendEvent(name: "level", value: level)
+    }
+}
+
+// Update hasLight attribute (called by app during device creation/migration)
+def updateHasLight(hasLight) {
+    sendEvent(name: "hasLight", value: hasLight ? "true" : "false")
+    log.info "Updated hasLight attribute to: ${hasLight}"
 }
