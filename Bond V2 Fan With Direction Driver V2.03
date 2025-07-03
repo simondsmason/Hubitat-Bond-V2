@@ -17,6 +17,7 @@
  * 2.01 - 2025.01.01 - Added proper SwitchLevel capability and direction reversal commands
  * 2.02 - 2025.01.01 - Improved refresh functionality and state synchronization with Bond hub
  * 2.03 - 2025.01.01 - Fixed direction state handling and added breeze mode support
+ * 2.06 - 2025.07.03 - (revert) Removed all light support logic and restored to pre-light state.
  *
  */
 metadata {
@@ -76,26 +77,6 @@ def initialize() {
     unschedule()
 }
 
-// Switch capability methods
-def on() {
-    log.debug "Turning fan on"
-    parent.handleFanOn(device)
-}
-
-def off() {
-    log.debug "Turning fan off"
-    parent.handleFanOff(device)
-}
-
-def toggle() {
-    def currentState = device.currentValue("switch")
-    if (currentState == "on") {
-        off()
-    } else {
-        on()
-    }
-}
-
 // FanControl capability methods
 def setSpeed(fanspeed) {
     log.info "Setting fan speed to ${fanspeed}"
@@ -144,39 +125,6 @@ def reverseDirection() {
 }
 
 // SwitchLevel capability (for apps that use dimmer-style control)
-def setLevel(level) {
-    log.info "Setting fan level to ${level}%"
-    
-    def speedLevels = settings?.speedLevels ?: "3"
-    
-    // Convert percentage to fan speed based on speed levels
-    if (level == 0) {
-        setSpeed("off")
-    } else if (speedLevels == "3") {
-        // 3-speed fan: 1-33%=low, 34-66%=medium, 67-100%=high
-        if (level <= 33) {
-            setSpeed("low")
-        } else if (level <= 66) {
-            setSpeed("medium")
-        } else {
-            setSpeed("high")
-        }
-    } else {
-        // 5-speed fan: original logic
-        if (level <= 20) {
-            setSpeed("low")
-        } else if (level <= 40) {
-            setSpeed("medium-low")
-        } else if (level <= 60) {
-            setSpeed("medium")
-        } else if (level <= 80) {
-            setSpeed("medium-high")
-        } else {
-            setSpeed("high")
-        }
-    }
-}
-
 def setLevel(level, duration) {
     // Ignore duration for fans
     setLevel(level)

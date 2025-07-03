@@ -24,6 +24,7 @@
  * 2.03 - 2025.01.01 - Fixed method call bug, implemented unknown state for Hold/Preset commands, simplified movement logic
  * 2.04 - 2025.01.01 - Added complete fan control support with speed, direction, and breeze mode capabilities
  * 2.05 - 2025.01.01 - Added 3-speed vs 5-speed fan configuration support, fixed duplicate method issues
+ * 2.06 - 2025.07.03 - (revert) Removed all light support logic and restored to pre-light state.
  *
  */
  
@@ -118,12 +119,20 @@ def createChildDevices() {
 			if (!fanDevice) {
 				try {
 					def deviceName = state.fanList?.get(fan)
+					def fanActions = state.fanDetails[fan] ?: []
+					def hasLight = fanActions.contains("TurnLightOn") || fanActions.contains("TurnLightOff") || fanActions.contains("SetBrightness")
 					if (deviceName) {
-						if (state.fanDetails[fan]?.contains("SetDirection"))
+						if (fanActions.contains("SetDirection"))
 							fanDevice = addChildDevice("simonmason", "Bond Fan With Direction V2", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
 						else
 							fanDevice = addChildDevice("simonmason", "Bond V2 Fan Driver", "bond:" + fan, 1234, ["name": deviceName, isComponent: false])
 						log.info "Created fan device: ${deviceName}"
+						// Set hasLight attribute
+						if (hasLight) {
+							fanDevice.sendEvent(name: "hasLight", value: true, displayed: false)
+						} else {
+							fanDevice.sendEvent(name: "hasLight", value: false, displayed: false)
+						}
 					} else {
 						log.error "Cannot create fan device ${fan}: missing device name in state.fanList"
 					}
@@ -1457,6 +1466,8 @@ def initialize() {
 	
 	def refreshEvery = refreshInterval ?: 30
     schedule("0/${refreshEvery} * * * * ? *", updateDevices)
+	
+	updateDeviceNamesForHubAll()
 }
 
 def checkForMissingDevices() {
@@ -1519,17 +1530,43 @@ def verifySelectedDevicesExist() {
 
 def updateDeviceNamesForHub(hubId, oldHubName, newHubName) {
 	logDebug "Updating device names for hub ${hubId} from '${oldHubName}' to '${newHubName}'"
-	
 	for (device in getChildDevices()) {
 		def deviceKey = device.deviceNetworkId.replace("bond:", "")
 		if (deviceKey.startsWith("${hubId}:")) {
 			def currentName = device.name
+			def isGroup = currentName.contains("(Group)")
+			def deviceNamePart = currentName
+			// Remove old prefix if present
 			if (currentName.startsWith("${oldHubName} - ")) {
-				def devicePortion = currentName.replace("${oldHubName} - ", "")
-				def newName = "${newHubName} - ${devicePortion}"
-				device.setName(newName)
-				log.info "Updated device name from '${currentName}' to '${newName}'"
+				deviceNamePart = currentName.replace("${oldHubName} - ", "")
+			} else if (currentName.startsWith("${newHubName} - ")) {
+				deviceNamePart = currentName.replace("${newHubName} - ", "")
 			}
+			// Remove any trailing old hub info
+			deviceNamePart = deviceNamePart.replaceAll(/ ?\(Bond Hub .+\)/, "")
+			// Remove duplicate (Group) if present
+			if (isGroup) {
+				deviceNamePart = deviceNamePart.replaceAll(/ ?\(Group\)/, "").trim()
+				def newName = "${deviceNamePart} (Group) (Bond Hub ${newHubName})"
+				if (currentName != newName) {
+					device.setName(newName)
+					log.info "Updated group device name from '${currentName}' to '${newName}'"
+				}
+			} else {
+				def newName = "${deviceNamePart} (Bond Hub ${newHubName})"
+				if (currentName != newName) {
+					device.setName(newName)
+					log.info "Updated device name from '${currentName}' to '${newName}'"
+				}
+			}
+		}
+	}
+}
+
+def updateDeviceNamesForHubAll() {
+	if (state.bondHubs) {
+		state.bondHubs.each { hubId, hubData ->
+			updateDeviceNamesForHub(hubId, hubData.name, hubData.name)
 		}
 	}
 }
@@ -1646,7 +1683,7 @@ def getDeviceById(id, hubId, ip, token) {
 		httpGet(params) { resp ->
 			if (checkHttpResponse("getDeviceById", resp)) {
 				def deviceKey = "${hubId}:${id.key}"
-				def deviceName = "${state.bondHubs[hubId].name} - ${resp.data.name}"
+				def deviceName = "${resp.data.name} (Bond Hub ${state.bondHubs[hubId].name})"
 				
 				// Debug logging to see what device types we're getting
 				logDebug "Found device: ${resp.data.name} with type: ${resp.data.type}"
@@ -1699,7 +1736,7 @@ def getGroupById(id, hubId, ip, token) {
 		httpGet(params) { resp ->
 			if (checkHttpResponse("getGroupById", resp)) {
 				def deviceKey = "${hubId}:group:${id.key}"
-				def deviceName = "${state.bondHubs[hubId].name} - ${resp.data.name} (Group)"
+				def deviceName = "${resp.data.name} (Group) (Bond Hub ${state.bondHubs[hubId].name})"
 				
 				logDebug "Found group: ${resp.data.name} with ID: ${id.key}"
 				
