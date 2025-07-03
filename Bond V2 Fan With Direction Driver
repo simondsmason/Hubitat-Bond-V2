@@ -295,7 +295,6 @@ def updateDirection(direction) {
 def updateBreezeMode(breeze) {
     sendEvent(name: "breeze", value: breeze)
 }
-
 // Light state update methods
 def updateLightState(lightState) {
     if (isLightSupported()) {
@@ -318,3 +317,5 @@ def updateHasLight(hasLight) {
     sendEvent(name: "hasLight", value: hasLight ? "true" : "false")
     log.info "Updated hasLight attribute to: ${hasLight}"
 }
+=======
+>>>>>>> 8331be9519d86f665482a894abf04f1fba3cfb33

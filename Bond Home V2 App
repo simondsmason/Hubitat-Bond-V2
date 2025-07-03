@@ -1902,6 +1902,7 @@ def getGroupById(id, hubId, ip, token) {
 	}
 }
 
+// Migration logic for light support
 def migrateExistingDevicesForLightSupport() {
 	logDebug "Migrating existing devices for light support"
 	
