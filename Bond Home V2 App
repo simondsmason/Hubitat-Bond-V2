@@ -1176,6 +1176,18 @@ def handleFanLightLevel(device, level) {
 	}
 }
 
+def handleFanLightToggle(device) {
+	def bondInfo = getBondInfoFromDevice(device)
+	if (!bondInfo) return
+	
+	logDebug "Handling Fan Light Toggle event for ${bondInfo.deviceId}"
+	
+	if (executeAction(bondInfo, "ToggleLight")) {
+		// Refresh to get the new state from Bond API
+		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+	}
+}
+
 // ==========================================
 // CORE ACTION EXECUTION AND UTILITIES
 // ==========================================

@@ -10,6 +10,8 @@
  * 2.03 - 2025.01.01 - Added movement tracking and proper state aggregation for group devices
  * 2.04 - 2025.01.01 - Fixed state parsing for groups, improved refresh handling and debugging
  * 2.05 - 2025.01.01 - Implemented unknown state for stopPositionChange, removed redundant movement tracking
+ * 2.06 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
+ * 2.07 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
  *
  */
 metadata {
@@ -34,6 +36,17 @@ metadata {
         attribute "position", "number"
         attribute "moving", "enum", ["opening", "closing", "stopped"]
     }
+    
+    preferences {
+        input("communicationType", "enum", title: "Communication Type", 
+              options: ["two-way": "Two-Way (Default)", "one-way": "One-Way"], 
+              defaultValue: "two-way", required: true,
+              description: "Select communication type for this device")
+        
+        input("repeatCount", "number", title: "Command Repeat Count (One-Way Only)", 
+              defaultValue: 3, range: "1..5", required: false,
+              description: "Number of times to repeat commands for one-way devices (1-5)")
+    }
 }
 
 def installed() {
@@ -54,6 +67,10 @@ def initialize() {
     sendEvent(name: "groupState", value: "mixed") // Start with mixed since we don't know individual device states
     sendEvent(name: "moving", value: "stopped")
     unschedule()
+    
+    // Initialize command tracking
+    state.currentCommand = null
+    state.commandStartTime = null
 }
 
 // Switch capability methods
@@ -66,33 +83,40 @@ def off() {
 }
 
 def toggle() {
-	parent.handleGroupAction(device, "TogglePower")
-    // Update local state optimistically
-    def currentState = device.currentValue("windowShade")
-    if (currentState == "open") {
-        updateShadeState("closed", 100, "off")
-    } else {
-        updateShadeState("open", 0, "on")
-    }
+	executeWithRepeat("toggle", { 
+        parent.handleGroupAction(device, "TogglePower")
+        // Update local state optimistically
+        def currentState = device.currentValue("windowShade")
+        if (currentState == "open") {
+            updateShadeState("closed", 100, "off")
+        } else {
+            updateShadeState("open", 0, "on")
+        }
+    })
 }
 
 // WindowShade capability methods
 def open() {
     log.debug "Opening shade group"
-	parent.handleGroupAction(device, "Open")
-    updateShadeState("open", 0, "on")
+	executeWithRepeat("open", { 
+        parent.handleGroupAction(device, "Open")
+        updateShadeState("open", 0, "on")
+    })
 }
 
 def close() {
     log.debug "Closing shade group"
-	parent.handleGroupAction(device, "Close")
-    updateShadeState("closed", 100, "off")
+	executeWithRepeat("close", { 
+        parent.handleGroupAction(device, "Close")
+        updateShadeState("closed", 100, "off")
+    })
 }
 
 def stop() {
     log.debug "Stopping shade group"
     unschedule(checkMovementProgress)
     sendEvent(name: "moving", value: "stopped")
+    // Stop command should never be repeated, even for one-way devices
 	parent.handleGroupStop(device)
     // Refresh group state after stopping
     runIn(2, refresh)
@@ -117,17 +141,19 @@ def setPosition(position) {
     }
     
     // Try to use proper SetPosition API call for groups
-    parent.handleGroupSetPosition(device, position)
-    
-    // Update device attributes based on position
-    sendEvent(name: "position", value: position)
-    if (position == 0) {
-        updateShadeState("open", 0, "on")
-    } else if (position == 100) {
-        updateShadeState("closed", 100, "off")
-    } else {
-        updateShadeState("partially open", position, "on")
-    }
+    executeWithRepeat("setPosition", { 
+        parent.handleGroupSetPosition(device, position)
+        
+        // Update device attributes based on position
+        sendEvent(name: "position", value: position)
+        if (position == 0) {
+            updateShadeState("open", 0, "on")
+        } else if (position == 100) {
+            updateShadeState("closed", 100, "off")
+        } else {
+            updateShadeState("partially open", position, "on")
+        }
+    })
 }
 
 def setLevel(level) {
@@ -141,9 +167,9 @@ def startPositionChange(direction) {
     sendEvent(name: "moving", value: direction == "open" ? "opening" : "closing")
     
     if (direction == "open") {
-        parent.handleGroupStartPositionChange(device, "open")
+        executeWithRepeat("startPositionChange", { parent.handleGroupStartPositionChange(device, "open") })
     } else if (direction == "close") {
-        parent.handleGroupStartPositionChange(device, "close")
+        executeWithRepeat("startPositionChange", { parent.handleGroupStartPositionChange(device, "close") })
     } else {
         log.warn "Invalid direction for startPositionChange: ${direction}"
     }
@@ -155,6 +181,7 @@ def stopPositionChange() {
     log.debug "Stopping group position change"
     unschedule()  // Cancel any scheduled tasks
     sendEvent(name: "moving", value: "stopped")
+    // Stop command should never be repeated, even for one-way devices
     parent.handleGroupStopPositionChange(device)
     // Don't refresh - position is now unknown after Hold command
 }
@@ -181,4 +208,80 @@ def updateShadeState(windowShadeValue, positionValue, switchValue) {
     } else {
         sendEvent(name: "groupState", value: "mixed")
     }
+}
+
+// Communication type helper methods
+def isOneWay() {
+    return settings?.communicationType == "one-way"
+}
+
+def getRepeatCount() {
+    return settings?.repeatCount ?: 3
+}
+
+def shouldRepeatCommand(command) {
+    // Always repeat for one-way devices, except for specific commands that shouldn't be repeated
+    if (!isOneWay()) return false
+    
+    // List of commands that should not be repeated even for one-way devices
+    def noRepeatCommands = ["stop", "hold", "lighton", "lightoff", "setlightlevel", "setbrightness"]
+    
+    return !noRepeatCommands.contains(command.toLowerCase())
+}
+
+def executeWithRepeat(command, action) {
+    // Check if there's an ongoing command that should be cancelled
+    if (state.currentCommand && state.currentCommand != command) {
+        logDebug "Cancelling ongoing ${state.currentCommand} command due to new ${command} command"
+        state.currentCommand = null
+        state.commandStartTime = null
+    }
+    
+    if (shouldRepeatCommand(command)) {
+        def repeatCount = getRepeatCount()
+        log.info "Executing ${command} command ${repeatCount} times for one-way device"
+        
+        // Set current command tracking
+        state.currentCommand = command
+        state.commandStartTime = now()
+        
+        for (int i = 0; i < repeatCount; i++) {
+            // Check if command was cancelled during execution
+            if (state.currentCommand != command) {
+                logDebug "Command ${command} was cancelled during repeat cycle"
+                return
+            }
+            
+            if (i > 0) {
+                logDebug "Pausing before repeat ${i+1} of ${command} command"
+                pauseExecution(500) // 500 ms between repeats (adjust as needed)
+                
+                // Check again after pause in case command was cancelled during pause
+                if (state.currentCommand != command) {
+                    logDebug "Command ${command} was cancelled during pause"
+                    return
+                }
+            }
+            logDebug "Executing repeat ${i+1} of ${command} command"
+            action()
+        }
+        
+        // Clear command tracking after successful completion
+        if (state.currentCommand == command) {
+            state.currentCommand = null
+            state.commandStartTime = null
+            logDebug "Completed ${command} command repeat cycle"
+        }
+    } else {
+        logDebug "Executing ${command} command (no repeat)"
+        action()
+    }
+}
+
+def executeDelayedCommand(data) {
+    data.action()
+}
+
+def logDebug(msg) {
+    log.debug msg
 }

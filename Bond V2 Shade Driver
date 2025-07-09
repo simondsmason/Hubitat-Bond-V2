@@ -12,6 +12,8 @@
  * 2.01 - 2025.01.01 - Added proper state tracking for position changes, improved refresh functionality
  * 2.02 - 2025.01.01 - Fixed startPositionChange to track movement and auto-update at limits
  * 2.03 - 2025.01.01 - Implemented unknown state for stopPositionChange, removed redundant movement tracking
+ * 2.04 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
+ * 2.05 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
  *
  */
 metadata {
@@ -35,6 +37,17 @@ metadata {
         attribute "position", "number"
         attribute "moving", "enum", ["opening", "closing", "stopped"]
     }
+    
+    preferences {
+        input("communicationType", "enum", title: "Communication Type", 
+              options: ["two-way": "Two-Way (Default)", "one-way": "One-Way"], 
+              defaultValue: "two-way", required: true,
+              description: "Select communication type for this device")
+        
+        input("repeatCount", "number", title: "Command Repeat Count (One-Way Only)", 
+              defaultValue: 3, range: "1..5", required: false,
+              description: "Number of times to repeat commands for one-way devices (1-5)")
+    }
 }
 
 def installed() {
@@ -54,14 +67,18 @@ def initialize() {
     sendEvent(name: "switch", value: "off")
     sendEvent(name: "moving", value: "stopped")
     unschedule()
+    
+    // Initialize command tracking
+    state.currentCommand = null
+    state.commandStartTime = null
 }
 
 def open() {
-	parent.handleOpen(device)
+	executeWithRepeat("open", { parent.handleOpen(device) })
 }
 
 def close() {
-	parent.handleClose(device)
+	executeWithRepeat("close", { parent.handleClose(device) })
 }
 
 def on() {
@@ -82,11 +99,13 @@ def toggle() {
 }
 
 def stop() {
-	parent.handleStop(device)
+    logDebug "stop() called"
+    // Stop command should never be repeated, even for one-way devices
+    parent.handleStop(device)
 }
 
 def preset() {
-	parent.handlePreset(device)
+	executeWithRepeat("preset", { parent.handlePreset(device) })
 }
 
 def fixShade(shade) {
@@ -116,7 +135,7 @@ def setPosition(Number position) {
     }
     
     // Try to use proper SetPosition API call
-    parent.handleSetPosition(device, position)
+    executeWithRepeat("setPosition", { parent.handleSetPosition(device, position) })
 }
 
 def setLevel(Number level) {
@@ -130,9 +149,9 @@ def startPositionChange(direction) {
     sendEvent(name: "moving", value: direction == "open" ? "opening" : "closing")
     
     if (direction == "open") {
-        parent.handleStartPositionChange(device, "open")
+        executeWithRepeat("startPositionChange", { parent.handleStartPositionChange(device, "open") })
     } else if (direction == "close") {
-        parent.handleStartPositionChange(device, "close")
+        executeWithRepeat("startPositionChange", { parent.handleStartPositionChange(device, "close") })
     } else {
         log.warn "Invalid direction for startPositionChange: ${direction}"
     }
@@ -141,9 +160,10 @@ def startPositionChange(direction) {
 }
 
 def stopPositionChange() {
-    log.debug "Stopping position change"
+    logDebug "stopPositionChange() called"
     unschedule(checkMovementProgress)
     sendEvent(name: "moving", value: "stopped")
+    // Stop command should never be repeated, even for one-way devices
     parent.handleStopPositionChange(device)
     // Refresh position after a brief delay
     runIn(2, refresh)
@@ -152,4 +172,80 @@ def stopPositionChange() {
 def refresh() {
     log.debug "Refreshing shade status" 
     parent.handleShadeRefresh(device)
+}
+
+// Communication type helper methods
+def isOneWay() {
+    return settings?.communicationType == "one-way"
+}
+
+def getRepeatCount() {
+    return settings?.repeatCount ?: 3
+}
+
+def shouldRepeatCommand(command) {
+    // Always repeat for one-way devices, except for specific commands that shouldn't be repeated
+    if (!isOneWay()) return false
+    
+    // List of commands that should not be repeated even for one-way devices
+    def noRepeatCommands = ["stop", "hold", "lighton", "lightoff", "setlightlevel", "setbrightness"]
+    
+    return !noRepeatCommands.contains(command.toLowerCase())
+}
+
+def executeWithRepeat(command, action) {
+    // Check if there's an ongoing command that should be cancelled
+    if (state.currentCommand && state.currentCommand != command) {
+        logDebug "Cancelling ongoing ${state.currentCommand} command due to new ${command} command"
+        state.currentCommand = null
+        state.commandStartTime = null
+    }
+    
+    if (shouldRepeatCommand(command)) {
+        def repeatCount = getRepeatCount()
+        log.info "Executing ${command} command ${repeatCount} times for one-way device"
+        
+        // Set current command tracking
+        state.currentCommand = command
+        state.commandStartTime = now()
+        
+        for (int i = 0; i < repeatCount; i++) {
+            // Check if command was cancelled during execution
+            if (state.currentCommand != command) {
+                logDebug "Command ${command} was cancelled during repeat cycle"
+                return
+            }
+            
+            if (i > 0) {
+                logDebug "Pausing before repeat ${i+1} of ${command} command"
+                pauseExecution(500) // 500 ms between repeats (adjust as needed)
+                
+                // Check again after pause in case command was cancelled during pause
+                if (state.currentCommand != command) {
+                    logDebug "Command ${command} was cancelled during pause"
+                    return
+                }
+            }
+            logDebug "Executing repeat ${i+1} of ${command} command"
+            action()
+        }
+        
+        // Clear command tracking after successful completion
+        if (state.currentCommand == command) {
+            state.currentCommand = null
+            state.commandStartTime = null
+            logDebug "Completed ${command} command repeat cycle"
+        }
+    } else {
+        logDebug "Executing ${command} command (no repeat)"
+        action()
+    }
+}
+
+def executeDelayedCommand(data) {
+    data.action()
+}
+
+def logDebug(msg) {
+    log.debug msg
 }

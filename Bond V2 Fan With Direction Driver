@@ -20,6 +20,8 @@
  * 2.06 - 2025.07.03 - (revert) Removed all light support logic and restored to pre-light state.
  * 2.07 - 2025.07.03 - Added optional light support for fans with built-in lights
  * 2.08 - 2025.07.03 - Fixed light capability implementation and separated fan/light controls
+ * 2.09 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
+ * 2.10 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
  *
  */
 metadata {
@@ -63,6 +65,15 @@ metadata {
               options: ["3": "3 Speed (Low/Medium/High)", "5": "5 Speed (Low/Med-Low/Med/Med-High/High)"], 
               defaultValue: "3", required: true,
               description: "Select the number of speeds your fan supports")
+        
+        input("communicationType", "enum", title: "Communication Type", 
+              options: ["two-way": "Two-Way (Default)", "one-way": "One-Way"], 
+              defaultValue: "two-way", required: true,
+              description: "Select communication type for this device")
+        
+        input("repeatCount", "number", title: "Command Repeat Count (One-Way Only)", 
+              defaultValue: 3, range: "1..5", required: false,
+              description: "Number of times to repeat commands for one-way devices (1-5)")
     }
 }
 
@@ -87,6 +98,10 @@ def initialize() {
     sendEvent(name: "lightSwitch", value: "off")
     sendEvent(name: "lightLevel", value: 0)
     unschedule()
+    
+    // Initialize command tracking
+    state.currentCommand = null
+    state.commandStartTime = null
 }
 
 // Check if light is supported
@@ -107,12 +122,12 @@ def off() {
 
 def setSpeed(fanspeed) {
     log.info "Setting fan speed to ${fanspeed}"
-    parent.handleFanSpeed(device, fanspeed)
+    executeWithRepeat("setSpeed", { parent.handleFanSpeed(device, fanspeed) })
 }
 
 def cycleSpeed() {
     log.debug "Cycling fan speed"
-    parent.handleFanCycleSpeed(device)
+    executeWithRepeat("cycleSpeed", { parent.handleFanCycleSpeed(device) })
 }
 
 // Direct speed commands
@@ -131,7 +146,7 @@ def low() {
 // Direction control
 def setDirection(direction) {
     log.info "Setting fan direction to ${direction}"
-    parent.handleFanDirection(device, direction)
+    executeWithRepeat("setDirection", { parent.handleFanDirection(device, direction) })
 }
 
 def reverseDirection() {
@@ -205,7 +220,7 @@ def setLightLevel(level) {
 // Breeze mode
 def breeze(breezeValue) {
     log.debug "Setting breeze mode to ${breezeValue}"
-    parent.handleFanBreeze(device, breezeValue)
+    executeWithRepeat("breeze", { parent.handleFanBreeze(device, breezeValue) })
 }
 
 // Fix fan state
@@ -317,5 +332,75 @@ def updateHasLight(hasLight) {
     sendEvent(name: "hasLight", value: hasLight ? "true" : "false")
     log.info "Updated hasLight attribute to: ${hasLight}"
 }
-=======
->>>>>>> 8331be9519d86f665482a894abf04f1fba3cfb33
+
+// Communication type helper methods
+def isOneWay() {
+    return settings?.communicationType == "one-way"
+}
+
+def getRepeatCount() {
+    return settings?.repeatCount ?: 3
+}
+
+def shouldRepeatCommand(command) {
+    // Always repeat for one-way devices, except for specific commands that shouldn't be repeated
+    if (!isOneWay()) return false
+    
+    // List of commands that should not be repeated even for one-way devices
+    def noRepeatCommands = ["stop", "hold", "lighton", "lightoff", "setlightlevel", "setbrightness"]
+    
+    return !noRepeatCommands.contains(command.toLowerCase())
+}
+
+def executeWithRepeat(command, action) {
+    // Check if there's an ongoing command that should be cancelled
+    if (state.currentCommand && state.currentCommand != command) {
+        logDebug "Cancelling ongoing ${state.currentCommand} command due to new ${command} command"
+        state.currentCommand = null
+        state.commandStartTime = null
+    }
+    
+    if (shouldRepeatCommand(command)) {
+        def repeatCount = getRepeatCount()
+        log.info "Executing ${command} command ${repeatCount} times for one-way device"
+        
+        // Set current command tracking
+        state.currentCommand = command
+        state.commandStartTime = now()
+        
+        for (int i = 0; i < repeatCount; i++) {
+            // Check if command was cancelled during execution
+            if (state.currentCommand != command) {
+                logDebug "Command ${command} was cancelled during repeat cycle"
+                return
+            }
+            
+            if (i > 0) {
+                logDebug "Pausing before repeat ${i+1} of ${command} command"
+                pauseExecution(500) // 500 ms between repeats (adjust as needed)
+                
+                // Check again after pause in case command was cancelled during pause
+                if (state.currentCommand != command) {
+                    logDebug "Command ${command} was cancelled during pause"
+                    return
+                }
+            }
+            logDebug "Executing repeat ${i+1} of ${command} command"
+            action()
+        }
+        
+        // Clear command tracking after successful completion
+        if (state.currentCommand == command) {
+            state.currentCommand = null
+            state.commandStartTime = null
+            logDebug "Completed ${command} command repeat cycle"
+        }
+    } else {
+        logDebug "Executing ${command} command (no repeat)"
+        action()
+    }
+}
+
+def logDebug(msg) {
+    log.debug msg
+}
