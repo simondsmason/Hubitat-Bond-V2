@@ -677,7 +677,7 @@ def handleFanOn(device) {
 		device.sendEvent(name: "switch", value: "on")
 		
 		// Refresh to get actual state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -693,7 +693,7 @@ def handleFanOff(device) {
 		device.sendEvent(name: "level", value: 0)
 		
 		// Refresh to confirm state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -779,7 +779,7 @@ def handleFanSpeed(device, speed) {
 		}
 		
 		// Refresh to get actual state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -854,7 +854,7 @@ def handleFanCycleSpeed(device) {
 	if (deviceActions?.contains("CycleSpeed")) {
 		if (executeAction(bondInfo, "CycleSpeed")) {
 			// Refresh to get the new speed from Bond API
-			runIn(1, "handleFanRefreshDelayed", [data: [device: device]])
+			runIn(1, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 		}
 	} else {
 		// Manual cycle through speeds based on fan configuration
@@ -913,7 +913,12 @@ def handleFanCycleSpeed(device) {
 }
 
 def handleFanRefreshDelayed(data) {
-	handleFanRefresh(data.device)
+	def device = findChildDevice(data.deviceId)
+	if (device) {
+		handleFanRefresh(device)
+	} else {
+		log.warn "Could not find device with ID ${data.deviceId} for delayed refresh"
+	}
 }
 
 def handleFanDirection(device, direction) {
@@ -930,7 +935,7 @@ def handleFanDirection(device, direction) {
 		device.sendEvent(name: "direction", value: direction)
 		
 		// Refresh to confirm state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -947,7 +952,7 @@ def handleFanBreeze(device, breezeValue) {
 		device.sendEvent(name: "breeze", value: breezeValue)
 		
 		// Refresh to confirm state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -1132,7 +1137,7 @@ def handleFanLightOn(device) {
 		device.updateLightState("on")
 		
 		// Refresh to confirm state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -1147,7 +1152,7 @@ def handleFanLightOff(device) {
 		device.updateLightState("off")
 		
 		// Refresh to confirm state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -1172,7 +1177,7 @@ def handleFanLightLevel(device, level) {
 		}
 		
 		// Refresh to confirm state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
@@ -1184,7 +1189,7 @@ def handleFanLightToggle(device) {
 	
 	if (executeAction(bondInfo, "ToggleLight")) {
 		// Refresh to get the new state from Bond API
-		runIn(2, "handleFanRefreshDelayed", [data: [device: device]])
+		runIn(2, "handleFanRefreshDelayed", [data: [deviceId: device.deviceNetworkId.replace("bond:", "")]])
 	}
 }
 
