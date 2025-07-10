@@ -27,6 +27,7 @@
  * 2.06 - 2025.07.03 - Changed device naming to "Device Name (Bond Hub HubName)" and "Device Name (Group) (Bond Hub HubName)". Existing devices are migrated to the new format automatically.
  * 2.07 - 2025.07.03 - Added optional light support for fans with built-in lights
  * 2.08 - 2025.07.03 - Fixed light capability implementation and separated fan/light controls
+ * 2.09 - 2025.01.09 - Fixed fan refresh errors: Replace device object with deviceId in runIn calls to prevent MissingMethodException
  *
  */
  
