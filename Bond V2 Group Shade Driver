@@ -13,6 +13,7 @@
  * 2.06 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
  * 2.07 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
  * 2.08 - 2025.01.01 - Fixed position mapping: position 0 now correctly maps to closed, position 100 to open
+ * 2.09 - 2025.01.01 - Fixed initialization default position and corrected toggle/open/close state updates
  *
  */
 metadata {
@@ -62,7 +63,7 @@ def updated() {
 
 def initialize() {
     log.debug "Initializing Bond V2 Group Shade Driver"
-    sendEvent(name: "position", value: 100) // Default position - closed
+    sendEvent(name: "position", value: 0) // Default position - closed
     sendEvent(name: "windowShade", value: "closed")
     sendEvent(name: "switch", value: "off")
     sendEvent(name: "groupState", value: "mixed") // Start with mixed since we don't know individual device states
@@ -89,9 +90,9 @@ def toggle() {
         // Update local state optimistically
         def currentState = device.currentValue("windowShade")
         if (currentState == "open") {
-            updateShadeState("closed", 100, "off")
+            updateShadeState("closed", 0, "off")
         } else {
-            updateShadeState("open", 0, "on")
+            updateShadeState("open", 100, "on")
         }
     })
 }
@@ -101,7 +102,7 @@ def open() {
     log.debug "Opening shade group"
 	executeWithRepeat("open", { 
         parent.handleGroupAction(device, "Open")
-        updateShadeState("open", 0, "on")
+        updateShadeState("open", 100, "on")
     })
 }
 
@@ -109,7 +110,7 @@ def close() {
     log.debug "Closing shade group"
 	executeWithRepeat("close", { 
         parent.handleGroupAction(device, "Close")
-        updateShadeState("closed", 100, "off")
+        updateShadeState("closed", 0, "off")
     })
 }
 

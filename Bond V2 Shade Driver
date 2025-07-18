@@ -15,6 +15,7 @@
  * 2.04 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
  * 2.05 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
  * 2.06 - 2025.01.01 - Fixed position mapping: position 0 now correctly maps to closed, position 100 to open
+ * 2.07 - 2025.01.01 - Fixed initialization default position and added optimistic state updates for open/close commands
  *
  */
 metadata {
@@ -63,7 +64,7 @@ def updated() {
 
 def initialize() {
     log.debug "Initializing Bond V2 Shade Driver"
-    sendEvent(name: "position", value: 100) // Default position - closed
+    sendEvent(name: "position", value: 0) // Default position - closed
     sendEvent(name: "windowShade", value: "closed")
     sendEvent(name: "switch", value: "off")
     sendEvent(name: "moving", value: "stopped")
@@ -75,11 +76,23 @@ def initialize() {
 }
 
 def open() {
-	executeWithRepeat("open", { parent.handleOpen(device) })
+	executeWithRepeat("open", { 
+        parent.handleOpen(device)
+        // Update local state optimistically
+        sendEvent(name: "position", value: 100)
+        sendEvent(name: "windowShade", value: "open")
+        sendEvent(name: "switch", value: "on")
+    })
 }
 
 def close() {
-	executeWithRepeat("close", { parent.handleClose(device) })
+	executeWithRepeat("close", { 
+        parent.handleClose(device)
+        // Update local state optimistically
+        sendEvent(name: "position", value: 0)
+        sendEvent(name: "windowShade", value: "closed")
+        sendEvent(name: "switch", value: "off")
+    })
 }
 
 def on() {
