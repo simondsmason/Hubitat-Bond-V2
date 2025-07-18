@@ -14,6 +14,7 @@
  * 2.03 - 2025.01.01 - Implemented unknown state for stopPositionChange, removed redundant movement tracking
  * 2.04 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
  * 2.05 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
+ * 2.06 - 2025.01.01 - Fixed position mapping: position 0 now correctly maps to closed, position 100 to open
  *
  */
 metadata {
@@ -121,12 +122,12 @@ def setPosition(Number position) {
     
     // Handle special cases first for backward compatibility
     if (position == 0) {
-        log.info "Position 0: Opening shade"
-        open()
+        log.info "Position 0: Closing shade"
+        close()
         return
     } else if (position == 100) {
-        log.info "Position 100: Closing shade"
-        close()
+        log.info "Position 100: Opening shade"
+        open()
         return
     } else if (position == 50) {
         log.info "Position 50: Triggering preset"
