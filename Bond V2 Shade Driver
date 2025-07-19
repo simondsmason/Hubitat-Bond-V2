@@ -16,6 +16,7 @@
  * 2.05 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
  * 2.06 - 2025.01.01 - Fixed position mapping: position 0 now correctly maps to closed, position 100 to open
  * 2.07 - 2025.01.01 - Fixed initialization default position and added optimistic state updates for open/close commands
+ * 2.08 - 2025.01.01 - Added user-adjustable command repeat delay (ms) preference for one-way devices (default 2000ms)
  *
  */
 metadata {
@@ -49,6 +50,9 @@ metadata {
         input("repeatCount", "number", title: "Command Repeat Count (One-Way Only)", 
               defaultValue: 3, range: "1..5", required: false,
               description: "Number of times to repeat commands for one-way devices (1-5)")
+        input("repeatDelay", "number", title: "Command Repeat Delay (ms, One-Way Only)",
+              defaultValue: 2000, range: "100..10000", required: false,
+              description: "Delay in milliseconds between repeated commands for one-way devices (100-10000 ms)")
     }
 }
 
@@ -197,6 +201,10 @@ def getRepeatCount() {
     return settings?.repeatCount ?: 3
 }
 
+def getRepeatDelay() {
+    return settings?.repeatDelay ?: 2000
+}
+
 def shouldRepeatCommand(command) {
     // Always repeat for one-way devices, except for specific commands that shouldn't be repeated
     if (!isOneWay()) return false
@@ -232,7 +240,7 @@ def executeWithRepeat(command, action) {
             
             if (i > 0) {
                 logDebug "Pausing before repeat ${i+1} of ${command} command"
-                pauseExecution(500) // 500 ms between repeats (adjust as needed)
+                pauseExecution(getRepeatDelay()) // Use preference value
                 
                 // Check again after pause in case command was cancelled during pause
                 if (state.currentCommand != command) {
