@@ -23,6 +23,7 @@
  * 2.09 - 2025.07.09 - Added One-Way/Two-Way communication preference with command repeat functionality
  * 2.10 - 2025.07.09 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
  * 2.11 - 2025.07.19 - Fixed fan state synchronization issue where speed was incorrectly set when fan is powered off
+ * 2.12 - 2025.08.20 - Fixed light state overriding main switch state - main switch now correctly represents fan power state
  *
  */
 metadata {
@@ -315,8 +316,8 @@ def updateBreezeMode(breeze) {
 def updateLightState(lightState) {
     if (isLightSupported()) {
         sendEvent(name: "lightSwitch", value: lightState)
-        // Also update the main switch attribute for Light capability compatibility
-        sendEvent(name: "switch", value: lightState)
+        // Don't update the main switch attribute - it should represent fan state, not light state
+        // sendEvent(name: "switch", value: lightState)
     }
 }
 
