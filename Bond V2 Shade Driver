@@ -8,15 +8,15 @@
  * - Original shade driver implementation
  * 
  * V2 Revision History (by Simon Mason)
- * 2.00 - 2025.01.01 - Enhanced setPosition with proper Bond API SetPosition support, improved position handling
- * 2.01 - 2025.01.01 - Added proper state tracking for position changes, improved refresh functionality
- * 2.02 - 2025.01.01 - Fixed startPositionChange to track movement and auto-update at limits
- * 2.03 - 2025.01.01 - Implemented unknown state for stopPositionChange, removed redundant movement tracking
- * 2.04 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
- * 2.05 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
- * 2.06 - 2025.01.01 - Fixed position mapping: position 0 now correctly maps to closed, position 100 to open
- * 2.07 - 2025.01.01 - Fixed initialization default position and added optimistic state updates for open/close commands
- * 2.08 - 2025.01.01 - Added user-adjustable command repeat delay (ms) preference for one-way devices (default 2000ms)
+ * 2.00 - 2025.07.02 - Enhanced setPosition with proper Bond API SetPosition support, improved position handling
+ * 2.01 - 2025.07.02 - Added proper state tracking for position changes, improved refresh functionality
+ * 2.02 - 2025.07.02 - Fixed startPositionChange to track movement and auto-update at limits
+ * 2.03 - 2025.07.02 - Implemented unknown state for stopPositionChange, removed redundant movement tracking
+ * 2.04 - 2025.07.09 - Added One-Way/Two-Way communication preference with command repeat functionality
+ * 2.05 - 2025.07.09 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
+ * 2.06 - 2025.07.18 - Fixed position mapping: position 0 now correctly maps to closed, position 100 to open
+ * 2.07 - 2025.07.18 - Fixed initialization default position and added optimistic state updates for open/close commands
+ * 2.08 - 2025.07.19 - Added user-adjustable command repeat delay (ms) preference for one-way devices (default 2000ms)
  *
  */
 metadata {

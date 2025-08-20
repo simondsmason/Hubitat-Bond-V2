@@ -18,17 +18,18 @@
  * 2020.06.28 - Added toggle command to all devices (suggested by jchurch) and support for having multiple Smart by BOND devices (discovered by jhciotti)
  *
  * V2 Revision History (by Simon Mason)
- * 2.00 - 2025.01.01 - Initial V2 version: Multi-hub support, improved setPosition for shades with proper API calls, Bond groups support
- * 2.01 - 2025.01.01 - Enhanced position change tracking, improved group state management, added group state refresh
- * 2.02 - 2025.01.01 - Added proper movement tracking for individual shades and groups, improved state synchronization
- * 2.03 - 2025.01.01 - Fixed method call bug, implemented unknown state for Hold/Preset commands, simplified movement logic
- * 2.04 - 2025.01.01 - Added complete fan control support with speed, direction, and breeze mode capabilities
- * 2.05 - 2025.01.01 - Added 3-speed vs 5-speed fan configuration support, fixed duplicate method issues
+ * 2.00 - 2025.07.02 - Initial V2 version: Multi-hub support, improved setPosition for shades with proper API calls, Bond groups support
+ * 2.01 - 2025.07.02 - Enhanced position change tracking, improved group state management, added group state refresh
+ * 2.02 - 2025.07.02 - Added proper movement tracking for individual shades and groups, improved state synchronization
+ * 2.03 - 2025.07.02 - Fixed method call bug, implemented unknown state for Hold/Preset commands, simplified movement logic
+ * 2.04 - 2025.07.02 - Added complete fan control support with speed, direction, and breeze mode capabilities
+ * 2.05 - 2025.07.02 - Added 3-speed vs 5-speed fan configuration support, fixed duplicate method issues
  * 2.06 - 2025.07.03 - Changed device naming to "Device Name (Bond Hub HubName)" and "Device Name (Group) (Bond Hub HubName)". Existing devices are migrated to the new format automatically.
  * 2.07 - 2025.07.03 - Added optional light support for fans with built-in lights
  * 2.08 - 2025.07.03 - Fixed light capability implementation and separated fan/light controls
- * 2.09 - 2025.01.09 - Fixed fan refresh errors: Replace device object with deviceId in runIn calls to prevent MissingMethodException
- * 2.10 - 2025.01.01 - Fixed position mapping in parent app: position 0 now correctly maps to closed, position 100 to open (matches driver convention)
+ * 2.09 - 2025.07.09 - Fixed fan refresh errors: Replace device object with deviceId in runIn calls to prevent MissingMethodException
+ * 2.10 - 2025.07.09 - Fixed position mapping in parent app: position 0 now correctly maps to closed, position 100 to open (matches driver convention)
+ * 2.11 - 2025.07.19 - Fixed fan state synchronization issue where speed was incorrectly set when fan is powered off
  *
  */
  
@@ -285,7 +286,7 @@ def handleOpen(device) {
     if (executeAction(bondInfo, "Open") && shouldSendEvent(bondInfo.deviceId)) {
         device.sendEvent(name: "switch", value: "on")
         device.sendEvent(name: "windowShade", value: "open")
-        device.sendEvent(name: "position", value: 100) // Standard convention: 100 = open
+        device.sendEvent(name: "position", value: 100) // Hubitat standard: 100 = open
     }
 }
 
@@ -297,7 +298,7 @@ def handleClose(device) {
     if (executeAction(bondInfo, "Close") && shouldSendEvent(bondInfo.deviceId)) {
         device.sendEvent(name: "switch", value: "off")
         device.sendEvent(name: "windowShade", value: "closed")
-        device.sendEvent(name: "position", value: 0) // Standard convention: 0 = closed
+        device.sendEvent(name: "position", value: 0) // Hubitat standard: 0 = closed
     }
 }
 
@@ -434,12 +435,13 @@ def updateShadeDeviceState(device, deviceState) {
 	if (hasPositionSupport) {
 		// Advanced shades with SetPosition support
 		logDebug "Advanced shade with position support: ${deviceState.position}"
-		device.sendEvent(name: "position", value: deviceState.position)
-		
-		if (deviceState.position == 0) {
+		// Flip Bond API (0=open, 100=closed) to Hubitat (0=closed, 100=open)
+		def hubitatPosition = 100 - deviceState.position
+		device.sendEvent(name: "position", value: hubitatPosition)
+		if (hubitatPosition == 100) {
 			device.sendEvent(name: "switch", value: "on")
 			device.sendEvent(name: "windowShade", value: "open")
-		} else if (deviceState.position == 100) {
+		} else if (hubitatPosition == 0) {
 			device.sendEvent(name: "switch", value: "off")
 			device.sendEvent(name: "windowShade", value: "closed")
 		} else {
@@ -449,28 +451,24 @@ def updateShadeDeviceState(device, deviceState) {
 	} else if (deviceState.open != null) {
 		// Basic shades with only open/close support
 		logDebug "Basic shade with open/close only: open=${deviceState.open}"
-		
 		if (deviceState.open == 1) {
 			device.sendEvent(name: "switch", value: "on")
 			device.sendEvent(name: "windowShade", value: "open")
-			device.sendEvent(name: "position", value: 100) // Standard convention: 100 = open
+			device.sendEvent(name: "position", value: 100) // Hubitat standard: 100 = open
 		} else if (deviceState.open == 0) {
 			device.sendEvent(name: "switch", value: "off")
 			device.sendEvent(name: "windowShade", value: "closed")
-			device.sendEvent(name: "position", value: 0) // Standard convention: 0 = closed
+			device.sendEvent(name: "position", value: 0) // Hubitat standard: 0 = closed
 		}
 	} else {
 		// No clear state information - this might happen after "Hold" command
 		logDebug "No clear state information from Bond API, device may be in hold/unknown state"
-		
 		// Don't update position or shade state if we can't determine it
 		// Just ensure we're not showing as moving
 		log.warn "Shade ${device.name} state unclear from Bond API response: ${deviceState}"
-		
 		// If we absolutely have no state info, leave current state as-is
 		// but make sure we're not stuck in moving state
 	}
-	
 	// Update moving state - shade has stopped moving
 	device.sendEvent(name: "moving", value: "stopped")
 }
@@ -629,15 +627,16 @@ def updateGroupDeviceState(device, groupState) {
 	
 	// If Bond provides position info for groups (unlikely but possible)
 	else if (groupState.position != null) {
-		device.sendEvent(name: "position", value: groupState.position)
-		if (groupState.position == 0) {
-			device.updateShadeState("closed", 0, "off")
-			device.sendEvent(name: "groupState", value: "closed")
-		} else if (groupState.position == 100) {
+		def hubitatPosition = 100 - groupState.position
+		device.sendEvent(name: "position", value: hubitatPosition)
+		if (hubitatPosition == 100) {
 			device.updateShadeState("open", 100, "on")
 			device.sendEvent(name: "groupState", value: "open")
+		} else if (hubitatPosition == 0) {
+			device.updateShadeState("closed", 0, "off")
+			device.sendEvent(name: "groupState", value: "closed")
 		} else {
-			device.updateShadeState("partially open", groupState.position, "on")
+			device.updateShadeState("partially open", hubitatPosition, "on")
 			device.sendEvent(name: "groupState", value: "mixed")
 		}
 	}
@@ -1015,62 +1014,71 @@ def updateFanDeviceState(device, deviceState) {
 		def speedLevels = device.getSetting("speedLevels") ?: "3"
 		def speedName = "medium"
 		
-		if (speedLevels == "3") {
-			// 3-speed mapping
-			switch (deviceState.speed) {
-				case 0:
-					speedName = "off"
-					break
-				case 1:
-					speedName = "low"
-					break
-				case 2:
-					speedName = "medium"
-					break
-				case 3:
-					speedName = "high"
-					break
-				default:
-					speedName = "medium"
-			}
+		// Check if fan is powered off - if so, force speed to "off" regardless of speed value
+		if (deviceState.power == 0) {
+			speedName = "off"
+			device.sendEvent(name: "speed", value: speedName)
+			device.sendEvent(name: "level", value: 0)
+			logDebug "Updated speed to off and level to 0 (power off, ignoring speed value)"
 		} else {
-			// 5-speed mapping
-			switch (deviceState.speed) {
-				case 0:
-					speedName = "off"
-					break
-				case 1:
-					speedName = "low"
-					break
-				case 2:
-					speedName = "medium-low"
-					break
-				case 3:
-					speedName = "medium"
-					break
-				case 4:
-					speedName = "medium-high"
-					break
-				case 5:
-					speedName = "high"
-					break
-				default:
-					speedName = "medium"
+			// Fan is powered on, process speed normally
+			if (speedLevels == "3") {
+				// 3-speed mapping
+				switch (deviceState.speed) {
+					case 0:
+						speedName = "off"
+						break
+					case 1:
+						speedName = "low"
+						break
+					case 2:
+						speedName = "medium"
+						break
+					case 3:
+						speedName = "high"
+						break
+					default:
+						speedName = "medium"
+				}
+			} else {
+				// 5-speed mapping
+				switch (deviceState.speed) {
+					case 0:
+						speedName = "off"
+						break
+					case 1:
+						speedName = "low"
+						break
+					case 2:
+						speedName = "medium-low"
+						break
+					case 3:
+						speedName = "medium"
+						break
+					case 4:
+						speedName = "medium-high"
+						break
+					case 5:
+						speedName = "high"
+						break
+					default:
+						speedName = "medium"
+				}
 			}
+			
+			device.sendEvent(name: "speed", value: speedName)
+			logDebug "Updated speed to: ${speedName}"
+			
+			// Calculate and update level
+			def levelValue = 0
+			if (speedName == "off") {
+				levelValue = 0
+			} else {
+				levelValue = calculateLevelFromSpeed(speedName, speedLevels)
+			}
+			device.sendEvent(name: "level", value: levelValue)
+			logDebug "Updated level to: ${levelValue}"
 		}
-		
-		device.sendEvent(name: "speed", value: speedName)
-		logDebug "Updated speed to: ${speedName}"
-		
-		// Calculate and update level
-		def levelValue = 0
-		if (speedName == "off") {
-			levelValue = 0
-		} else {
-			levelValue = calculateLevelFromSpeed(speedName, speedLevels)
-		}
-		device.sendEvent(name: "level", value: levelValue)
-		logDebug "Updated level to: ${levelValue}"
 		
 	} else if (deviceState.power == 0) {
 		// If no speed but power is off

@@ -13,15 +13,16 @@
  * 2020.06.28 - Added toggle command to all devices
  * 
  * V2 Revision History (by Simon Mason)
- * 2.00 - 2025.01.01 - Enhanced fan control with improved speed handling and state tracking, multi-hub support
- * 2.01 - 2025.01.01 - Added proper SwitchLevel capability support for percentage-based control
- * 2.02 - 2025.01.01 - Improved refresh functionality and state synchronization with Bond hub
- * 2.03 - 2025.01.01 - Fixed fan speed transitions and added breeze mode support
+ * 2.00 - 2025.07.02 - Enhanced fan control with improved speed handling and state tracking, multi-hub support
+ * 2.01 - 2025.07.02 - Added proper SwitchLevel capability support for percentage-based control
+ * 2.02 - 2025.07.02 - Improved refresh functionality and state synchronization with Bond hub
+ * 2.03 - 2025.07.02 - Fixed fan speed transitions and added breeze mode support
  * 2.06 - 2025.07.03 - (revert) Removed all light support logic and restored to pre-light state.
  * 2.07 - 2025.07.03 - Added optional light support for fans with built-in lights
  * 2.08 - 2025.07.03 - Fixed light capability implementation and separated fan/light controls
- * 2.09 - 2025.01.01 - Added One-Way/Two-Way communication preference with command repeat functionality
- * 2.10 - 2025.01.01 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
+ * 2.09 - 2025.07.09 - Added One-Way/Two-Way communication preference with command repeat functionality
+ * 2.10 - 2025.07.09 - Fixed runIn issues by switching to pauseExecution, added command cancellation logic
+ * 2.11 - 2025.07.19 - Fixed fan state synchronization issue where speed was incorrectly set when fan is powered off
  *
  */
 metadata {
